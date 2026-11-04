@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "trunk",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": ["-c", "PATH=/opt/homebrew/opt/rustup/bin:$PATH exec trunk serve --offline --port 8080"],
+      "port": 8080
+    }
+  ]
+}
