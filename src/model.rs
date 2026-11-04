@@ -1,0 +1,1097 @@
+//! アニメ顔の横回転モデル：描画に依存しない幾何計算部分（仕様 第3〜8節・第11節）。
+//!
+//! 返す座標はすべて px 変換前のモデル単位。
+//! 角度単位：`build_scene` / `planar_eye_widths` / `rad` の引数は度、
+//! それ以外の `theta` はラジアン。
+
+use std::fmt;
+use std::sync::LazyLock;
+
+pub const EPS: f64 = 1e-10;
+pub const Y_MAX: f64 = 172.0;
+/// 目の高さ（目の中心・瞳の中心の y）。参考画像（顔の高さ 961px 中、瞳 449px）から 80.4。
+/// 仕様 第7.2節の初期値は 88。
+pub const EYE_Y: f64 = 80.4;
+/// 目の大きさの倍率。仕様 第7.2〜7.3節の目（幅30・縦幅8・瞳3.2×5.6）に対する倍率。
+/// 参考画像の虹彩の大きさから 1.35。
+pub const EYE_SCALE: f64 = 1.35;
+/// 瞳の中心の |x| の初期値。仕様の初期値は 28。
+pub const EYE_CENTER_X: f64 = 38.5;
+/// 目の画像素材（まつ毛の先）が y≈79 の輪郭 a(y) の内側に収まる、瞳の |x| の最大値。
+/// これより外では、画像の目の外側の端が輪郭で欠ける。
+pub const EYE_IMAGE_FIT_MAX: f64 = 33.5;
+/// 瞳の中心の |x| として受け付ける範囲。線の目（目頭〜目尻、まぶた、瞳）が
+/// 全体に有効な前面断面上に収まる範囲。
+pub const EYE_CENTER_X_MIN: f64 = 22.0;
+pub const EYE_CENTER_X_MAX: f64 = 44.0;
+
+/// 左右半径 a₀ の節点 (y, a₀)。添付の正面輪郭画像（476×556 px、頭頂 28px〜顎先 528px を
+/// y = 0〜172 に対応、1px = 0.344 単位）から線の中心を測って作った左右対称の値。
+/// 仕様 第5.2節の a₀ 列を置き換えるもの。
+const A_ROWS: [[f64; 2]; 31] = [
+    [0.0, 0.0],
+    [0.5, 5.70],
+    [1.0, 10.05],
+    [2.0, 16.50],
+    [3.0, 20.01],
+    [5.0, 25.31],
+    [8.0, 31.82],
+    [12.0, 38.81],
+    [18.0, 47.07],
+    [26.0, 54.38],
+    [36.0, 61.52],
+    [48.0, 67.42],
+    [60.0, 69.83],
+    [68.0, 70.52],
+    [74.0, 70.52],
+    [80.0, 69.32],
+    [90.0, 66.74],
+    [100.0, 63.98],
+    [110.0, 60.89],
+    [120.0, 57.28],
+    [128.0, 53.49],
+    [134.0, 50.40],
+    [138.0, 47.93],
+    [142.0, 44.10],
+    [148.0, 37.59],
+    [154.0, 30.61],
+    [160.0, 22.28],
+    [165.0, 14.17],
+    [169.0, 7.20],
+    [171.0, 3.34],
+    [172.0, 0.0],
+];
+
+/// 前後半径 b₀ と断面中心 c₀ の節点 (y, b₀, c₀)。
+///
+/// 45° に回したときの輪郭の手描き指定（V字断面 φ = 20°、q = 1）に合うよう、高さごとに
+/// 左右端の2式 X_R = (a + z_side)/√2、X_L = (z_side − √(a² + bb²))/√2 を b, c について解いた値。
+/// 正面輪郭 a₀ は変えていないので、正面の見た目は変わらない。
+/// 頭頂付近（y ≤ 8）は指定の線がモデルの頭頂 y = 0 より上にあり解けないため、
+/// y = 12 と同じ比 b ≈ 1.4a で丸くつないでいる。顎先 (172) は c = 60、b = 0（仕様と同じ）。
+/// 仕様 第5.2節の値は `SPEC_BC_ROWS` に残してある。
+const BC_ROWS: [[f64; 3]; 32] = [
+    [0.0, 0.0, -1.30],
+    [2.0, 23.10, -1.28],
+    [4.0, 31.96, -1.47],
+    [8.0, 44.55, -1.38],
+    [12.0, 54.29, -1.06],
+    [18.0, 60.28, -0.49],
+    [24.0, 64.97, -0.05],
+    [30.0, 68.22, 0.01],
+    [40.0, 71.35, -0.01],
+    [50.0, 72.98, 0.44],
+    [60.0, 73.15, 0.74],
+    [70.0, 72.44, 0.70],
+    [80.0, 70.53, 0.54],
+    [90.0, 67.70, 0.59],
+    [100.0, 65.05, 2.08],
+    [110.0, 61.94, 5.37],
+    [116.0, 59.30, 8.39],
+    [120.0, 57.50, 10.93],
+    [124.0, 55.32, 13.33],
+    [128.0, 51.26, 17.09],
+    [132.0, 47.39, 19.55],
+    [136.0, 44.28, 21.09],
+    [140.0, 41.33, 22.58],
+    [144.0, 38.78, 24.31],
+    [148.0, 34.90, 27.61],
+    [152.0, 30.16, 31.55],
+    [156.0, 25.27, 35.77],
+    [160.0, 20.42, 40.23],
+    [163.0, 15.82, 44.98],
+    [166.0, 9.18, 51.54],
+    [169.0, 5.00, 55.70],
+    [172.0, 0.0, 60.0],
+];
+
+/// 仕様 第5.2節の b₀, c₀（参考用）。
+#[allow(dead_code)]
+const SPEC_BC_ROWS: [[f64; 3]; 15] = [
+    [0.0, 0.0, -5.0],
+    [2.0, 15.0, -5.0],
+    [8.0, 32.0, -4.0],
+    [18.0, 50.0, -3.0],
+    [30.0, 62.0, -2.0],
+    [42.0, 67.0, -2.0],
+    [60.0, 70.0, -1.0],
+    [80.0, 69.0, 0.0],
+    [100.0, 63.0, 2.0],
+    [120.0, 49.0, 10.0],
+    [135.0, 32.0, 24.0],
+    [147.0, 20.0, 38.0],
+    [157.0, 11.0, 49.0],
+    [167.0, 4.0, 57.0],
+    [172.0, 0.0, 60.0],
+];
+
+/// 区分3次Hermite補間の1系列（第5.3節）。内部点の傾きは重み付き調和平均。
+struct Curve {
+    ys: Vec<f64>,
+    fs: Vec<f64>,
+    ms: Vec<f64>,
+}
+
+impl Curve {
+    fn new(points: impl IntoIterator<Item = (f64, f64)>) -> Self {
+        let (ys, fs): (Vec<f64>, Vec<f64>) = points.into_iter().unzip();
+        let n = ys.len();
+        let ms = (0..n)
+            .map(|i| {
+                if i == 0 {
+                    (fs[1] - fs[0]) / (ys[1] - ys[0])
+                } else if i == n - 1 {
+                    (fs[i] - fs[i - 1]) / (ys[i] - ys[i - 1])
+                } else {
+                    let h0 = ys[i] - ys[i - 1];
+                    let h1 = ys[i + 1] - ys[i];
+                    let d0 = (fs[i] - fs[i - 1]) / h0;
+                    let d1 = (fs[i + 1] - fs[i]) / h1;
+                    if d0 * d1 <= 0.0 {
+                        0.0
+                    } else {
+                        3.0 * (h0 + h1) / ((2.0 * h1 + h0) / d0 + (h1 + 2.0 * h0) / d1)
+                    }
+                }
+            })
+            .collect();
+        Self { ys, fs, ms }
+    }
+
+    fn eval(&self, y: f64) -> f64 {
+        let (ys, fs, ms) = (&self.ys, &self.fs, &self.ms);
+        let mut i = 0;
+        while i < ys.len() - 2 && ys[i + 1] < y {
+            i += 1;
+        }
+        let h = ys[i + 1] - ys[i];
+        let t = (y - ys[i]) / h;
+        let (t2, t3) = (t * t, t * t * t);
+        (2.0 * t3 - 3.0 * t2 + 1.0) * fs[i]
+            + (t3 - 2.0 * t2 + t) * h * ms[i]
+            + (-2.0 * t3 + 3.0 * t2) * fs[i + 1]
+            + (t3 - t2) * h * ms[i + 1]
+    }
+}
+
+static CURVES: LazyLock<[Curve; 3]> = LazyLock::new(|| {
+    [
+        Curve::new(A_ROWS.iter().map(|r| (r[0], r[1]))),
+        Curve::new(BC_ROWS.iter().map(|r| (r[0], r[1]))),
+        Curve::new(BC_ROWS.iter().map(|r| (r[0], r[2]))),
+    ]
+});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelError {
+    /// 回転角が [-90, 90] 外、または q が正の有限値でない。
+    InvalidView,
+    /// y が [0, 172] 外、または非有限値。
+    InvalidShapeInput,
+    /// 目の点が有効な前面断面上にない（|x| > a(y) など）。
+    EyeOffSurface,
+    /// 平面モデルの入力が不正。
+    InvalidPlanarInput,
+    /// 目の間隔（瞳の中心の |x|）が範囲外、または非有限値。
+    InvalidEyeLayout,
+    /// 断面の形のパラメータ（V字の傾き）が範囲外。
+    InvalidHead,
+}
+
+impl fmt::Display for ModelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::InvalidView => "回転角は −90〜90°、奥行き倍率 q は正の値にしてください",
+            Self::InvalidShapeInput => "高さ y は 0〜172 の範囲で指定してください",
+            Self::EyeOffSurface => "目の点が顔の前面断面上にありません",
+            Self::InvalidPlanarInput => "平面モデルの入力が不正です",
+            Self::InvalidEyeLayout => "目の間隔は 22〜44 の範囲で指定してください",
+            Self::InvalidHead => "V字の傾きは 0〜40° の範囲で指定してください",
+        })
+    }
+}
+
+impl std::error::Error for ModelError {}
+
+pub type Result<T> = std::result::Result<T, ModelError>;
+
+pub fn rad(degrees: f64) -> f64 {
+    degrees * std::f64::consts::PI / 180.0
+}
+
+fn check_view(degrees: f64, q: f64) -> Result<()> {
+    if !degrees.is_finite() || degrees.abs() > 90.0 || !q.is_finite() || q <= 0.0 {
+        return Err(ModelError::InvalidView);
+    }
+    Ok(())
+}
+
+fn check_q(q: f64) -> Result<()> {
+    if !q.is_finite() || q <= 0.0 {
+        return Err(ModelError::InvalidView);
+    }
+    Ok(())
+}
+
+/// 高さ y の基本形状。a: 左右半径、b: 前後半径、c: 楕円断面の中心の前後位置（第5節）。
+/// 断面の前面の形（`Front`）によらず、表面の中心線 c + b と後ろ端 c − b はこの値で決まる。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shape {
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
+}
+
+pub fn shape(y: f64, q: f64) -> Result<Shape> {
+    if !y.is_finite() || !(0.0..=Y_MAX).contains(&y) {
+        return Err(ModelError::InvalidShapeInput);
+    }
+    check_q(q)?;
+    let v = CURVES.each_ref().map(|c| c.eval(y));
+    Ok(Shape {
+        a: v[0].max(0.0),
+        b: q * v[1].max(0.0),
+        c: q * v[2],
+    })
+}
+
+/// 断面の前半分の形。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Front {
+    /// 仕様どおりの楕円（第5節）。頭が球に近い動きになる。
+    Ellipse,
+    /// ゆるやかなV字。左右の角 (±a) から中心線へ向かう2枚の平面。
+    /// `phi` は上から見たときの面の傾き（ラジアン、q = 1 のとき）。後ろ半分は丸い楕円。
+    Wedge { phi: f64 },
+}
+
+/// 頭の形のパラメータ。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Head {
+    /// 前後方向の倍率（第2.1節）。
+    pub q: f64,
+    pub front: Front,
+}
+
+impl Head {
+    pub fn ellipse(q: f64) -> Self {
+        Self { q, front: Front::Ellipse }
+    }
+    pub fn wedge(q: f64, phi_degrees: f64) -> Self {
+        Self { q, front: Front::Wedge { phi: rad(phi_degrees) } }
+    }
+}
+
+/// V字の傾きとして受け付ける範囲（度）。
+pub const WEDGE_PHI_MIN: f64 = 0.0;
+pub const WEDGE_PHI_MAX: f64 = 40.0;
+/// V字の傾きの初期値（度）。
+pub const WEDGE_PHI_DEFAULT: f64 = 20.0;
+
+fn check_head(head: Head) -> Result<()> {
+    check_q(head.q)?;
+    if let Front::Wedge { phi } = head.front {
+        if !phi.is_finite() || phi < rad(WEDGE_PHI_MIN) - EPS || phi > rad(WEDGE_PHI_MAX) + EPS {
+            return Err(ModelError::InvalidHead);
+        }
+    }
+    Ok(())
+}
+
+/// 高さ y の断面。上から見て、前半分（楕円またはV字）と後ろ半分（楕円）からなる凸な形。
+///
+/// - 左右の角（正面での輪郭）: (±a, z_side)
+/// - 前の先端（表面の中心線）: (0, z_tip)、z_tip = z_side + d
+/// - 後ろ端: (0, z_side − bb)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Section {
+    pub a: f64,
+    pub z_side: f64,
+    /// 左右の角から前の先端までの奥行き。
+    pub d: f64,
+    /// 左右の角から後ろ端までの奥行き（後ろ半分の楕円の前後半径）。
+    pub bb: f64,
+    pub z_tip: f64,
+    pub front: Front,
+}
+
+/// 高さ y の断面を作る。
+///
+/// 楕円：z_side = c、d = bb = b（第5節と同じ）。
+/// V字：表面の中心線 c + b と後ろ端 c − b は楕円と同じ位置に保ち、
+/// 前面の奥行きを d = min(q·a·tanφ, b) とする（後ろの丸みが前より浅くならないよう b で頭打ち）。
+pub fn section(y: f64, head: Head) -> Result<Section> {
+    check_head(head)?;
+    let Shape { a, b, c } = shape(y, head.q)?;
+    Ok(match head.front {
+        Front::Ellipse => Section { a, z_side: c, d: b, bb: b, z_tip: c + b, front: head.front },
+        Front::Wedge { phi } => {
+            let d = (head.q * a * phi.tan()).min(b);
+            Section { a, z_side: c + b - d, d, bb: 2.0 * b - d, z_tip: c + b, front: head.front }
+        }
+    })
+}
+
+/// 回転後の座標。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rotated {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+/// 共通の回転式（第3節）。theta はラジアン。
+pub fn rotate(x: f64, y: f64, z: f64, theta: f64) -> Rotated {
+    let (s, c) = theta.sin_cos();
+    Rotated {
+        x: x * c + z * s,
+        y,
+        z: -x * s + z * c,
+    }
+}
+
+/// 高さ y の画面上の左右端と表面中心線（第6.1節・第6.3節）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Bounds {
+    pub left: f64,
+    pub right: f64,
+    pub center: f64,
+    /// 輪郭の幅の半分（楕円では第6.1節の R）。
+    pub r: f64,
+    /// 中心線から左輪郭までの距離 M_L
+    pub margin_left: f64,
+    /// 中心線から右輪郭までの距離 M_R
+    pub margin_right: f64,
+}
+
+pub fn bounds(y: f64, theta: f64, head: Head) -> Result<Bounds> {
+    let sec = section(y, head)?;
+    let (s, cc) = theta.sin_cos();
+    let xl = support(&sec, -1.0, s, cc);
+    let xr = support(&sec, 1.0, s, cc);
+    let left = xl.0 * cc + xl.1 * s;
+    let right = xr.0 * cc + xr.1 * s;
+    let center = sec.z_tip * s;
+    Ok(Bounds {
+        left,
+        right,
+        center,
+        r: (right - left) / 2.0,
+        margin_left: center - left,
+        margin_right: right - center,
+    })
+}
+
+/// 断面のうち、回転後の X を sigma の向きに最大にする点 (x, z)。
+/// 凸な断面なので、これが今の輪郭の点になる（第6.2節の一般化）。
+fn support(sec: &Section, sigma: f64, s: f64, cc: f64) -> (f64, f64) {
+    let Section { a, z_side, bb, z_tip, front, .. } = *sec;
+    // 楕円（中心 z_side、半径 a, rz）の sigma 方向の端。半径が 0 なら None。
+    let ellipse_extreme = |rz: f64| -> Option<(f64, f64)> {
+        let r = (a * cc).hypot(rz * s);
+        (r >= EPS).then(|| (sigma * a * a * cc / r, z_side + sigma * rz * rz * s / r))
+    };
+    match front {
+        Front::Ellipse => ellipse_extreme(sec.d).unwrap_or((0.0, z_side)),
+        Front::Wedge { .. } => {
+            let score = |p: &(f64, f64)| sigma * (p.0 * cc + p.1 * s);
+            let mut best = (0.0, z_tip);
+            let mut cands = vec![(a, z_side), (-a, z_side)];
+            // 後ろ半分の楕円の端が、後ろ半分（z ≤ z_side）にあるときだけ候補にする。
+            if sigma * s <= 0.0 {
+                cands.extend(ellipse_extreme(bb));
+            }
+            for p in cands {
+                if score(&p) > score(&best) + 1e-12 {
+                    best = p;
+                }
+            }
+            best
+        }
+    }
+}
+
+/// 局所座標 (x, y, z)。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Local {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+/// 今、輪郭になっている表面の点（局所座標）。sigma = −1 が左端、+1 が右端。第6.2節。
+pub fn contour_point(y: f64, sigma: f64, theta: f64, head: Head) -> Result<Local> {
+    let sec = section(y, head)?;
+    let (s, cc) = theta.sin_cos();
+    let (x, z) = support(&sec, sigma, s, cc);
+    Ok(Local { x, y, z })
+}
+
+/// 前面に貼った点の回転結果と可視判定（第7.1節・第8.1節）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SurfacePoint {
+    pub local: Local,
+    pub rotated: Rotated,
+    pub facing: f64,
+    pub visible: bool,
+}
+
+pub fn surface_point(x: f64, y: f64, theta: f64, head: Head) -> Result<SurfacePoint> {
+    let sec = section(y, head)?;
+    let Section { a, z_side, d, .. } = sec;
+    let degenerate = match sec.front {
+        Front::Ellipse => d <= EPS,
+        Front::Wedge { .. } => false,
+    };
+    if !x.is_finite() || a <= EPS || degenerate || x.abs() > a + EPS {
+        return Err(ModelError::EyeOffSurface);
+    }
+    let (s, cc) = theta.sin_cos();
+    let (z, facing) = match sec.front {
+        Front::Ellipse => {
+            // 第7.1節・第8.1節
+            let alpha = (x / a).clamp(-1.0, 1.0).asin();
+            let (sa, ca) = alpha.sin_cos();
+            (z_side + d * ca, ca * cc / d - sa * s / a)
+        }
+        Front::Wedge { .. } => {
+            // V字の片側の平面。外向き法線は (sgn(x)·d, a) / √(a² + d²)。
+            let u = (x.abs() / a).min(1.0);
+            let n = a.hypot(d);
+            let f = |sg: f64| (a * cc - sg * d * s) / n;
+            let facing = if x > 0.0 {
+                f(1.0)
+            } else if x < 0.0 {
+                f(-1.0)
+            } else {
+                f(1.0).max(f(-1.0))
+            };
+            (z_side + d * (1.0 - u), facing)
+        }
+    };
+    Ok(SurfacePoint {
+        local: Local { x, y, z },
+        rotated: rotate(x, y, z, theta),
+        facing,
+        visible: facing >= -EPS,
+    })
+}
+
+pub type Polyline = Vec<(f64, f64)>;
+
+/// 可視判定が `want` と一致する点が連続する区間ごとに、`proj` で2次元化した線を返す。
+/// 1点以下の区間は捨てる（第8.2節）。
+pub fn runs_where(
+    points: &[SurfacePoint],
+    want: bool,
+    proj: impl Fn(&SurfacePoint) -> (f64, f64),
+) -> Vec<Polyline> {
+    let mut runs = Vec::new();
+    let mut run: Polyline = Vec::new();
+    for p in points.iter().map(Some).chain(std::iter::once(None)) {
+        match p {
+            Some(p) if p.visible == want => run.push(proj(p)),
+            _ => {
+                if run.len() > 1 {
+                    runs.push(std::mem::take(&mut run));
+                } else {
+                    run.clear();
+                }
+            }
+        }
+    }
+    runs
+}
+
+/// 正面画像上の (X, Y) で可視区間を返す。
+pub fn visible_runs(points: &[SurfacePoint]) -> Vec<Polyline> {
+    runs_where(points, true, |p| (p.rotated.x, p.rotated.y))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EyeRole {
+    /// θ = 0 の画面左の目
+    Left,
+    /// θ = 0 の画面右の目
+    Right,
+    Near,
+    Far,
+}
+
+impl EyeRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Left => "画面左",
+            Self::Right => "画面右",
+            Self::Near => "手前",
+            Self::Far => "奥",
+        }
+    }
+    /// 色分け用：手前／画面左 を一方、奥／画面右 をもう一方にする。
+    pub fn is_near_style(self) -> bool {
+        matches!(self, Self::Near | Self::Left)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Eye {
+    /// 正面で画面左の目が −1、画面右の目が +1。
+    pub side: f64,
+    pub role: EyeRole,
+    /// まぶた・瞳の可視区間（正面画像の X, Y）。
+    pub runs: Vec<Polyline>,
+    /// 目の高さ EYE_Y の目の横線のうち、見える部分の投影幅（モデル単位）。
+    pub width: f64,
+    /// 見える部分の投影範囲 (min X, max X)。見えない場合 None。
+    pub span: Option<(f64, f64)>,
+    /// 正面比 [%]。
+    pub percent: f64,
+    /// 目の高さ EYE_Y の目の横線（断面図用）。全サンプル点。
+    pub line: Vec<SurfacePoint>,
+}
+
+/// 正面での片目の横幅（仕様の 30 × EYE_SCALE）。目幅の正面比の分母。
+pub const EYE_WIDTH: f64 = 30.0 * EYE_SCALE;
+/// まぶたの片側の縦幅（仕様の 8 × EYE_SCALE）。
+pub const EYE_LID: f64 = 8.0 * EYE_SCALE;
+/// 瞳の簡略曲線の半径（仕様の 3.2 × 5.6 に EYE_SCALE を掛けたもの）。
+pub const PUPIL_RX: f64 = 3.2 * EYE_SCALE;
+pub const PUPIL_RY: f64 = 5.6 * EYE_SCALE;
+
+/// 片目を計算する。`center_x` は瞳（目の中心）の |x|。目頭は center_x − EYE_WIDTH / 2。
+pub fn eye(side: f64, theta: f64, head: Head, center_x: f64) -> Result<Eye> {
+    let inner = center_x - EYE_WIDTH / 2.0;
+    let mut runs = Vec::new();
+    for vertical in [-1.0, 1.0] {
+        let pts = (0..=160)
+            .map(|i| {
+                let t = i as f64 / 160.0;
+                surface_point(
+                    side * (inner + EYE_WIDTH * t),
+                    EYE_Y + vertical * EYE_LID * (std::f64::consts::PI * t).sin(),
+                    theta,
+                    head,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        runs.extend(visible_runs(&pts));
+    }
+    let pupil = (0..=100)
+        .map(|i| {
+            let beta = i as f64 / 100.0 * std::f64::consts::TAU;
+            surface_point(
+                center_x * side + PUPIL_RX * beta.cos(),
+                EYE_Y + PUPIL_RY * beta.sin(),
+                theta,
+                head,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    runs.extend(visible_runs(&pupil));
+
+    let line = (0..=300)
+        .map(|i| surface_point(side * (inner + EYE_WIDTH * i as f64 / 300.0), EYE_Y, theta, head))
+        .collect::<Result<Vec<_>>>()?;
+    let span = line
+        .iter()
+        .filter(|p| p.visible)
+        .map(|p| p.rotated.x)
+        .fold(None, |acc: Option<(f64, f64)>, x| match acc {
+            None => Some((x, x)),
+            Some((lo, hi)) => Some((lo.min(x), hi.max(x))),
+        });
+    let width = span.map_or(0.0, |(lo, hi)| hi - lo);
+    Ok(Eye {
+        side,
+        role: EyeRole::Left, // build_scene で上書き
+        runs,
+        width,
+        span,
+        percent: 100.0 * width / EYE_WIDTH,
+        line,
+    })
+}
+
+/// 上から見た目の高さ EYE_Y の断面図用データ（第9.2節）。座標は回転後の (X, Z)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrossSection {
+    /// 回転後の断面（閉じた線）。
+    pub outline: Polyline,
+    /// 正面（θ = 0, q = 1）の断面。参考線用。
+    pub reference: Polyline,
+    /// ● 今の輪郭の点 [左, 右]。
+    pub contour_now: [(f64, f64); 2],
+    /// □ 正面で輪郭だった点 (∓a, z_side) を回転したもの [左, 右]。
+    pub contour_front: [(f64, f64); 2],
+    /// 顔表面の中心線の点 (0, z_tip) を回転したもの。
+    pub center: (f64, f64),
+    pub bounds: Bounds,
+}
+
+/// 断面の外形を局所座標 (x, z) の閉じた線として返す。
+pub fn section_outline(sec: &Section) -> Polyline {
+    let Section { a, z_side, d, bb, z_tip, front } = *sec;
+    let tau = std::f64::consts::TAU;
+    match front {
+        Front::Ellipse => (0..=180)
+            .map(|i| {
+                let al = i as f64 / 180.0 * tau;
+                (a * al.sin(), z_side + d * al.cos())
+            })
+            .collect(),
+        Front::Wedge { .. } => {
+            // 右の角 → 後ろ → 左の角（後ろ半分の楕円）→ 前の先端 → 右の角
+            let mut pts: Polyline = (0..=90)
+                .map(|i| {
+                    let al = std::f64::consts::FRAC_PI_2 + i as f64 / 90.0 * std::f64::consts::PI;
+                    (a * al.sin(), z_side + bb * al.cos())
+                })
+                .collect();
+            pts.push((0.0, z_tip));
+            pts.push((a, z_side));
+            pts
+        }
+    }
+}
+
+pub fn cross_section(theta: f64, head: Head) -> Result<CrossSection> {
+    let sec = section(EYE_Y, head)?;
+    let ref_sec = section(EYE_Y, Head { q: 1.0, ..head })?;
+    let rot = |(x, z): (f64, f64), th: f64| {
+        let r = rotate(x, EYE_Y, z, th);
+        (r.x, r.z)
+    };
+    let cl = contour_point(EYE_Y, -1.0, theta, head)?;
+    let cr = contour_point(EYE_Y, 1.0, theta, head)?;
+    Ok(CrossSection {
+        outline: section_outline(&sec).into_iter().map(|p| rot(p, theta)).collect(),
+        reference: section_outline(&ref_sec),
+        contour_now: [rot((cl.x, cl.z), theta), rot((cr.x, cr.z), theta)],
+        contour_front: [rot((-sec.a, sec.z_side), theta), rot((sec.a, sec.z_side), theta)],
+        center: rot((0.0, sec.z_tip), theta),
+        bounds: bounds(EYE_Y, theta, head)?,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Scene {
+    pub degrees: f64,
+    pub q: f64,
+    pub head: Head,
+    /// 瞳（目の中心）の |x|。
+    pub eye_x: f64,
+    pub theta: f64,
+    /// 回転後の輪郭（閉じたパス）。
+    pub outline: Polyline,
+    /// 正面の輪郭（q = 1, θ = 0）。回転角・q で動かない。
+    pub reference: Polyline,
+    pub centerline: Polyline,
+    /// [画面左の目 (s=−1), 画面右の目 (s=+1)]
+    pub eyes: [Eye; 2],
+    pub chin: (f64, f64),
+    pub eye_level: [(f64, f64); 2],
+    pub section: CrossSection,
+}
+
+/// 仕様どおりの楕円断面・目の間隔の初期値（EYE_CENTER_X）で場面を作る。
+pub fn build_scene(degrees: f64, q: f64) -> Result<Scene> {
+    build_scene_with(degrees, Head::ellipse(q), EYE_CENTER_X)
+}
+
+/// `eye_x` は瞳（目の中心）の |x|。EYE_CENTER_X_MIN〜EYE_CENTER_X_MAX。
+pub fn build_scene_with(degrees: f64, head: Head, eye_x: f64) -> Result<Scene> {
+    let q = head.q;
+    check_view(degrees, q)?;
+    check_head(head)?;
+    if !eye_x.is_finite() || !(EYE_CENTER_X_MIN..=EYE_CENTER_X_MAX).contains(&eye_x) {
+        return Err(ModelError::InvalidEyeLayout);
+    }
+    let theta = rad(degrees);
+    let mut outline = Vec::with_capacity(690);
+    let mut reference = Vec::with_capacity(690);
+    for i in 0..=344 {
+        let y = i as f64 / 2.0;
+        outline.push((bounds(y, theta, head)?.left, y));
+        reference.push((-shape(y, 1.0)?.a, y));
+    }
+    for i in (0..=344).rev() {
+        let y = i as f64 / 2.0;
+        outline.push((bounds(y, theta, head)?.right, y));
+        reference.push((shape(y, 1.0)?.a, y));
+    }
+    let centerline = (0..=172)
+        .map(|y| bounds(y as f64, theta, head).map(|b| (b.center, y as f64)))
+        .collect::<Result<Vec<_>>>()?;
+    let mut eyes = [eye(-1.0, theta, head, eye_x)?, eye(1.0, theta, head, eye_x)?];
+    for e in &mut eyes {
+        e.role = if degrees == 0.0 {
+            if e.side < 0.0 {
+                EyeRole::Left
+            } else {
+                EyeRole::Right
+            }
+        } else if e.side * degrees.signum() < 0.0 {
+            EyeRole::Near
+        } else {
+            EyeRole::Far
+        };
+    }
+    let slice = bounds(EYE_Y, theta, head)?;
+    Ok(Scene {
+        degrees,
+        q,
+        head,
+        eye_x,
+        theta,
+        outline,
+        reference,
+        centerline,
+        eyes,
+        chin: (60.0 * q * theta.sin(), Y_MAX),
+        eye_level: [(slice.left, EYE_Y), (slice.right, EYE_Y)],
+        section: cross_section(theta, head)?,
+    })
+}
+
+/// 独立した目の平面モデル（第4節）。角度は度。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanarEye {
+    pub d: f64,
+    pub near: f64,
+    pub far: f64,
+}
+
+pub fn planar_eye_widths(degrees: f64, phi_degrees: f64, w0: f64) -> Result<PlanarEye> {
+    check_view(degrees, 1.0)?;
+    if !phi_degrees.is_finite()
+        || !(0.0..90.0).contains(&phi_degrees)
+        || !w0.is_finite()
+        || w0 <= 0.0
+    {
+        return Err(ModelError::InvalidPlanarInput);
+    }
+    let psi = rad(degrees.abs());
+    let d = w0 * rad(phi_degrees).tan();
+    let near = w0 * psi.cos() + d * psi.sin();
+    let far = w0 * psi.cos() - d * psi.sin();
+    Ok(PlanarEye {
+        d,
+        near: near.max(0.0),
+        far: far.max(0.0),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOL: f64 = 1e-8;
+    const QS: [f64; 3] = [0.55, 1.0, 1.35];
+
+    /// 形によらず成り立つ条件を確かめる頭の形（楕円・V字の初期値・平ら・最大の傾き）。
+    fn heads(q: f64) -> [Head; 4] {
+        [
+            Head::ellipse(q),
+            Head::wedge(q, WEDGE_PHI_DEFAULT),
+            Head::wedge(q, WEDGE_PHI_MIN),
+            Head::wedge(q, WEDGE_PHI_MAX),
+        ]
+    }
+
+    fn scene(deg: f64, head: Head) -> Scene {
+        build_scene_with(deg, head, EYE_CENTER_X).unwrap()
+    }
+
+    fn near_far(s: &Scene) -> (&Eye, &Eye) {
+        let near = s.eyes.iter().find(|e| e.role == EyeRole::Near).unwrap();
+        let far = s.eyes.iter().find(|e| e.role == EyeRole::Far).unwrap();
+        (near, far)
+    }
+
+    #[test]
+    fn shape_hits_table_values() {
+        for r in A_ROWS {
+            assert!((shape(r[0], 1.0).unwrap().a - r[1]).abs() < TOL);
+        }
+        for r in BC_ROWS {
+            let s = shape(r[0], 1.0).unwrap();
+            assert!((s.b - r[1]).abs() < TOL);
+            assert!((s.c - r[2]).abs() < TOL);
+        }
+        let s = shape(100.0, 1.3).unwrap();
+        assert!((s.b - 65.05 * 1.3).abs() < TOL && (s.c - 2.08 * 1.3).abs() < TOL);
+    }
+
+    #[test]
+    fn wedge_keeps_centerline_and_back() {
+        for q in QS {
+            for i in 0..=344 {
+                let y = i as f64 / 2.0;
+                let sh = shape(y, q).unwrap();
+                let s = section(y, Head::wedge(q, WEDGE_PHI_DEFAULT)).unwrap();
+                assert!((s.z_tip - (sh.c + sh.b)).abs() < TOL);
+                assert!((s.z_side - s.bb - (sh.c - sh.b)).abs() < TOL);
+                assert!(s.d >= 0.0 && s.bb >= s.d - TOL);
+            }
+        }
+    }
+
+    #[test]
+    fn frontal_view_is_identity() {
+        for q in QS {
+            for head in heads(q) {
+                let s = scene(0.0, head);
+                assert!(s.chin.0.abs() < TOL);
+                for e in &s.eyes {
+                    assert_eq!(e.percent.round(), 100.0);
+                    for p in &e.line {
+                        assert!((p.rotated.x - p.local.x).abs() < TOL);
+                    }
+                }
+                assert_eq!(s.eyes[0].role, EyeRole::Left);
+                assert_eq!(s.eyes[1].role, EyeRole::Right);
+                // 正面では q や断面の形によらず、輪郭は ±a、中心線は 0。
+                for (p, r) in s.outline.iter().zip(&s.reference) {
+                    assert!((p.0 - r.0).abs() < TOL);
+                }
+                assert!(s.centerline.iter().all(|p| p.0.abs() < TOL));
+            }
+        }
+    }
+
+    #[test]
+    fn outline_is_mirror_symmetric() {
+        for q in QS {
+            for head in heads(q) {
+                for deg in [1.0, 17.0, 30.0, 60.0, 89.0, 90.0] {
+                    for i in 0..=344 {
+                        let y = i as f64 / 2.0;
+                        let p = bounds(y, rad(deg), head).unwrap();
+                        let m = bounds(y, rad(-deg), head).unwrap();
+                        assert!((m.left + p.right).abs() < TOL);
+                        assert!((m.right + p.left).abs() < TOL);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chin_offset_matches_formula() {
+        for q in QS {
+            for head in heads(q) {
+                for deg in [-90.0, -45.0, 0.0, 30.0, 90.0] {
+                    let s = scene(deg, head);
+                    let want = 60.0 * q * rad(deg).sin();
+                    assert!((s.chin.0 - want).abs() < TOL);
+                    let b = bounds(172.0, rad(deg), head).unwrap();
+                    assert!((b.left - want).abs() < TOL && (b.right - want).abs() < TOL);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn far_eye_vanishes_at_90() {
+        for q in QS {
+            for head in heads(q) {
+                for deg in [90.0, -90.0] {
+                    let s = scene(deg, head);
+                    let (_, far) = near_far(&s);
+                    // 平らな前面（φ = 0）では真横でちょうど面が縦一直線になり（F = 0 の境界）、
+                    // 幅 0 の線として残る。それ以外は裏側に回って見えなくなる。
+                    assert!(far.width.abs() < 1e-9);
+                }
+            }
+        }
+    }
+
+    /// ●の点を回転した X が輪郭の左右端に一致し、断面上のどの点よりも外側にある。
+    #[test]
+    fn contour_point_is_the_extreme_point() {
+        for q in QS {
+            for head in heads(q) {
+                for deg in [-90.0, -50.0, -30.0, 0.0, 10.0, 30.0, 75.0, 90.0] {
+                    let th = rad(deg);
+                    for y in [0.0, 1.0, 50.0, EYE_Y, 120.0, 150.0, 172.0] {
+                        let b = bounds(y, th, head).unwrap();
+                        let l = contour_point(y, -1.0, th, head).unwrap();
+                        let r = contour_point(y, 1.0, th, head).unwrap();
+                        assert!((rotate(l.x, l.y, l.z, th).x - b.left).abs() < TOL);
+                        assert!((rotate(r.x, r.y, r.z, th).x - b.right).abs() < TOL);
+                        let sec = section(y, head).unwrap();
+                        for (x, z) in section_outline(&sec) {
+                            let xx = rotate(x, y, z, th).x;
+                            assert!(xx >= b.left - 1e-6 && xx <= b.right + 1e-6);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 楕円では第6.1節の厳密な式 X = cS ± R と一致する。
+    #[test]
+    fn ellipse_bounds_match_spec_formula() {
+        for q in QS {
+            for deg in [-80.0, -30.0, 0.0, 45.0, 90.0] {
+                let th = rad(deg);
+                let (s, c) = th.sin_cos();
+                for y in [0.0, 30.0, EYE_Y, 140.0, 172.0] {
+                    let sh = shape(y, q).unwrap();
+                    let r = (sh.a * c).hypot(sh.b * s);
+                    let b = bounds(y, th, Head::ellipse(q)).unwrap();
+                    assert!((b.left - (sh.c * s - r)).abs() < TOL);
+                    assert!((b.right - (sh.c * s + r)).abs() < TOL);
+                }
+            }
+        }
+    }
+
+    /// V字では目が平面上にあるので、第4節の平面モデルの式どおりに変化する。
+    /// 傾きの tan は d / a（q を含む）。奥の目は 90° − atan(d/a) を超えると一度に消える。
+    #[test]
+    fn wedge_eye_follows_planar_model() {
+        for q in QS {
+            let head = Head::wedge(q, WEDGE_PHI_DEFAULT);
+            let sec = section(EYE_Y, head).unwrap();
+            let t = sec.d / sec.a;
+            let vanish = 90.0 - t.atan().to_degrees();
+            for deg in [5.0, 20.0, 45.0, 60.0, 80.0] {
+                let s = scene(deg, head);
+                let (near, far) = near_far(&s);
+                let th = rad(deg);
+                let want_near = 100.0 * (th.cos() + t * th.sin());
+                assert!((near.percent - want_near).abs() < 1e-6, "q={q} deg={deg}");
+                if deg < vanish - 0.5 {
+                    let want_far = 100.0 * (th.cos() - t * th.sin());
+                    assert!((far.percent - want_far).abs() < 1e-6, "q={q} deg={deg}");
+                } else if deg > vanish + 0.5 {
+                    assert_eq!(far.width, 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn all_values_finite_and_nonnegative() {
+        for q in QS {
+            for head in heads(q) {
+                for deg in (-90..=90).step_by(3) {
+                    let s = scene(deg as f64, head);
+                    for e in &s.eyes {
+                        assert!(e.width.is_finite() && e.width >= 0.0);
+                        assert!(e.percent.is_finite());
+                        for run in &e.runs {
+                            assert!(run.len() > 1);
+                            assert!(run.iter().all(|p| p.0.is_finite() && p.1.is_finite()));
+                        }
+                    }
+                    assert!(s.outline.iter().all(|p| p.0.is_finite()));
+                    assert!(s.section.outline.iter().all(|p| p.0.is_finite() && p.1.is_finite()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn far_eye_never_reappears() {
+        for q in QS {
+            for head in heads(q) {
+                let mut prev = f64::INFINITY;
+                for deg in 0..=90 {
+                    let far = &scene(deg as f64, head).eyes[1];
+                    assert!(far.width <= prev + 1e-9, "q={q} deg={deg}");
+                    prev = far.width;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn planar_model_phi_zero() {
+        for deg in [-60.0, 0.0, 30.0, 90.0] {
+            let p = planar_eye_widths(deg, 0.0, 40.0).unwrap();
+            let want = (40.0 * rad(deg).cos()).max(0.0);
+            assert!((p.near - want).abs() < TOL && (p.far - want).abs() < TOL);
+        }
+        // 消失角 ψ = 90° − φ
+        let p = planar_eye_widths(70.0, 20.0, 40.0).unwrap();
+        assert!(p.far.abs() < 1e-9);
+    }
+
+    /// 仕様 第13.2節の表の形式で、楕円断面での値を固定する。
+    /// 輪郭 a₀・前後の厚み b₀, c₀・目の配置と大きさを参考画像に合わせたため、目幅は仕様書の
+    /// 数値（30°で 118%／55% → 124%／49% など。目の間隔は初期値 EYE_CENTER_X）とは異なる。
+    /// 顎先の横ずれは c(172) = 60q が変わらないので仕様書と同じ。
+    #[test]
+    fn eye_width_table_for_current_shape() {
+        // (|θ|, 手前%, 奥%, 顎先の横ずれ)
+        let table = [
+            (0.0, 100.0, 100.0, 0.0),
+            (30.0, 124.0, 49.0, 30.0),
+            (60.0, 116.0, 5.0, 51.9615),
+            (90.0, 76.0, 0.0, 60.0),
+        ];
+        for (deg, near_pct, far_pct, chin) in table {
+            for sign in [1.0, -1.0] {
+                let s = build_scene(sign * deg, 1.0).unwrap();
+                let (n, f) = if deg == 0.0 {
+                    (&s.eyes[0], &s.eyes[1])
+                } else {
+                    near_far(&s)
+                };
+                assert_eq!(n.percent.round(), near_pct, "near {deg}");
+                assert_eq!(f.percent.round(), far_pct, "far {deg}");
+                assert!((s.chin.0.abs() - chin).abs() < 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn eye_spacing_range_is_valid_everywhere() {
+        for eye_x in [EYE_CENTER_X_MIN, 28.0, EYE_CENTER_X, EYE_CENTER_X_MAX] {
+            for q in QS {
+                for head in heads(q) {
+                    for deg in (-90..=90).step_by(5) {
+                        let s = build_scene_with(deg as f64, head, eye_x).unwrap();
+                        for e in &s.eyes {
+                            assert!(e.width.is_finite() && e.width >= 0.0);
+                        }
+                    }
+                    let s = build_scene_with(0.0, head, eye_x).unwrap();
+                    for e in &s.eyes {
+                        assert_eq!(e.percent.round(), 100.0);
+                        let (lo, hi) = e.span.unwrap();
+                        assert!(((lo + hi) / 2.0 - e.side * eye_x).abs() < 1e-9);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_input() {
+        let h = Head::ellipse(1.0);
+        assert_eq!(build_scene(91.0, 1.0), Err(ModelError::InvalidView));
+        assert_eq!(build_scene(f64::NAN, 1.0), Err(ModelError::InvalidView));
+        assert_eq!(build_scene(0.0, 0.0), Err(ModelError::InvalidView));
+        assert_eq!(build_scene_with(0.0, h, 21.9), Err(ModelError::InvalidEyeLayout));
+        assert_eq!(build_scene_with(0.0, h, 44.1), Err(ModelError::InvalidEyeLayout));
+        assert_eq!(build_scene_with(0.0, h, f64::NAN), Err(ModelError::InvalidEyeLayout));
+        assert_eq!(
+            build_scene_with(0.0, Head::wedge(1.0, 41.0), EYE_CENTER_X),
+            Err(ModelError::InvalidHead)
+        );
+        assert_eq!(
+            build_scene_with(0.0, Head::wedge(1.0, -1.0), EYE_CENTER_X),
+            Err(ModelError::InvalidHead)
+        );
+        assert_eq!(shape(-1.0, 1.0), Err(ModelError::InvalidShapeInput));
+        assert_eq!(shape(172.5, 1.0), Err(ModelError::InvalidShapeInput));
+        for head in heads(1.0) {
+            assert_eq!(surface_point(70.0, 88.0, 0.0, head), Err(ModelError::EyeOffSurface));
+            assert_eq!(surface_point(0.0, 172.0, 0.0, head), Err(ModelError::EyeOffSurface));
+        }
+    }
+}

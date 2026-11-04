@@ -1,0 +1,14 @@
+# Rust のビルド成果物
+/target/
+
+# Trunk の出力
+/dist/
+
+# macOS
+.DS_Store
+
+# RustRover / JetBrains（共有する実行構成は .run/ に置く）
+.idea/
+
+# Claude Code の個人設定
+/.claude/settings.local.json
