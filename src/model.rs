@@ -341,6 +341,22 @@ fn profile_weight(degrees: f64) -> f64 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// 回した頭の頭頂を持ち上げる高さの範囲。y がこれより下の輪郭は動かさない。
+const TOP_LIFT_RANGE: f64 = 40.0;
+
+/// 頭頂を持ち上げる重み。正面で 0、|θ| ≥ 45° で 1。
+/// 45° 以上では、頭頂が真横の指定と同じ高さ（`PROFILE_FRONT` の始点）になる。
+fn top_lift_weight(degrees: f64) -> f64 {
+    let t = (degrees.abs() / PROFILE_START_DEGREES).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// 高さ row の輪郭を持ち上げる量（重み 1 のとき）。頭頂で最大、`TOP_LIFT_RANGE` で 0。
+fn top_lift(row: f64) -> f64 {
+    let t = (1.0 - row / TOP_LIFT_RANGE).max(0.0);
+    -PROFILE_FRONT[0][2] * t * t
+}
+
 /// 表の row での (X, Y) を線形補間で返す。
 fn profile_at(table: &[[f64; 3]], row: f64) -> (f64, f64) {
     let i = table.partition_point(|r| r[0] < row).clamp(1, table.len() - 1);
@@ -950,6 +966,8 @@ struct ProfileMorph {
     theta: f64,
     head: Head,
     weight: f64,
+    /// 頭頂を持ち上げる重み。
+    lift: f64,
     /// 真横で顔の前面が画面右なら +1、左なら −1。
     dir: f64,
 }
@@ -960,6 +978,7 @@ impl ProfileMorph {
             theta: rad(degrees),
             head,
             weight: profile_weight(degrees),
+            lift: top_lift_weight(degrees),
             dir: if degrees < 0.0 { -1.0 } else { 1.0 },
         }
     }
@@ -968,9 +987,10 @@ impl ProfileMorph {
     /// 手描きの点 `target` に重なるのと同じだけ動かす。
     fn apply(&self, x: f64, row: f64, side_x: f64, target: (f64, f64)) -> (f64, f64) {
         let (tx, ty) = target;
+        let y = row - self.lift * top_lift(row);
         (
             x + self.weight * self.dir * (self.head.q * tx - side_x),
-            row + self.weight * (ty - row),
+            y + self.weight * (ty - y),
         )
     }
 
@@ -1402,7 +1422,7 @@ mod tests {
         }
     }
 
-    /// |θ| ≤ 45° の輪郭は断面モデルのままで、線は閉じている。
+    /// |θ| ≤ 45° の輪郭は、頭頂付近の高さを除いて断面モデルのままで、線は閉じている。
     #[test]
     fn profile_does_not_touch_views_up_to_45() {
         for q in QS {
@@ -1410,7 +1430,7 @@ mod tests {
                 for deg in [-45.0, -20.0, 0.0, 30.0, 45.0] {
                     let s = scene(deg, head);
                     assert_eq!(s.outline.first(), s.outline.last());
-                    for &(x, y) in &s.outline {
+                    for &(x, y) in s.outline.iter().filter(|p| p.1 >= TOP_LIFT_RANGE) {
                         let b = bounds(y, rad(deg), head).unwrap();
                         assert!(
                             (x - b.left).abs() < TOL || (x - b.right).abs() < TOL,
@@ -1419,6 +1439,33 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// 頭頂の高さは正面で y = 0、45° 以上で真横の指定と同じ。そのあいだは上がる一方で、
+    /// 輪郭の高さの順番は入れ替わらない。
+    #[test]
+    fn head_top_height_follows_rotation() {
+        let top = |s: &Scene| s.outline.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+        for q in QS {
+            for head in heads(q) {
+                assert!(top(&scene(0.0, head)).abs() < TOL);
+                for deg in [45.0, -45.0, 50.0, 60.0, 75.0, 90.0, -90.0] {
+                    assert!((top(&scene(deg, head)) - PROFILE_FRONT[0][2]).abs() < TOL, "{deg}");
+                }
+                let mut prev = 0.0;
+                for deg in 1..=45 {
+                    let t = top(&scene(deg as f64, head));
+                    assert!(t < prev, "deg={deg}");
+                    prev = t;
+                }
+                let s = scene(45.0, head);
+                assert!((s.eye_level[0].1 - EYE_Y).abs() < TOL);
+            }
+        }
+        for i in 0..80 {
+            let (a, b) = (i as f64 / 2.0, (i + 1) as f64 / 2.0);
+            assert!(a - top_lift(a) < b - top_lift(b));
         }
     }
 
