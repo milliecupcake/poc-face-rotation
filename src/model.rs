@@ -299,6 +299,42 @@ const PROFILE_SPLIT_ROW: f64 = 124.0;
 /// 手描きの横顔を効かせ始める |θ|（度）。45° の輪郭の指定を保つため、ここまでは 0。
 const PROFILE_START_DEGREES: f64 = 45.0;
 
+/// 鼻の線の手描き指定 [z, y]。鼻筋の付け根から鼻先を通って鼻の下まで、q = 1 の値。
+/// 顔の中心の面 (x = 0) にある線で、回転で sinθ に比例して横へ張り出すので、
+/// 正面では縦の直線、真横ではこの形になる。両端は `PROFILE_FRONT` の線の上にある。
+const NOSE_PROFILE: [[f64; 2]; 27] = [
+    [70.22, 78.65],
+    [70.23, 79.60],
+    [69.83, 82.19],
+    [69.76, 83.15],
+    [69.75, 85.72],
+    [69.88, 87.06],
+    [70.31, 89.46],
+    [70.95, 91.58],
+    [71.86, 93.78],
+    [72.84, 95.56],
+    [74.18, 97.39],
+    [75.69, 99.15],
+    [78.48, 101.95],
+    [80.94, 104.15],
+    [83.49, 106.14],
+    [85.21, 107.27],
+    [89.40, 109.49],
+    [89.93, 109.60],
+    [90.23, 109.50],
+    [89.80, 109.89],
+    [88.41, 113.63],
+    [87.52, 115.45],
+    [86.74, 116.71],
+    [81.55, 122.90],
+    [78.14, 126.33],
+    [77.84, 126.81],
+    [78.01, 126.85],
+];
+
+/// 鼻の下に隠す顔の線の幅。鼻の線から、顔の線よりこの分だけ奥までを塗りつぶす。
+const NOSE_MASK_DEPTH: f64 = 3.0;
+
 /// 真横の輪郭へ寄せる重み。|θ| ≤ 45° で 0、90° で 1 になるなめらかな階段。
 fn profile_weight(degrees: f64) -> f64 {
     let t = ((degrees.abs() - PROFILE_START_DEGREES) / (90.0 - PROFILE_START_DEGREES)).clamp(0.0, 1.0);
@@ -876,11 +912,35 @@ pub struct Scene {
     /// 正面の輪郭（q = 1, θ = 0）。回転角・q で動かない。`outline` と同じ順の点列。
     pub reference: Polyline,
     pub centerline: Polyline,
+    /// 鼻の線。顔の上のレイヤーに描く。
+    pub nose: Polyline,
+    /// 鼻の下の顔を隠す領域（閉じた線）。
+    pub nose_mask: Polyline,
     /// [画面左の目 (s=−1), 画面右の目 (s=+1)]
     pub eyes: [Eye; 2],
     pub chin: (f64, f64),
     pub eye_level: [(f64, f64); 2],
     pub section: CrossSection,
+}
+
+/// 鼻の線（正面画像の X, Y）。
+fn nose_line(morph: &ProfileMorph) -> Result<Polyline> {
+    NOSE_PROFILE.iter().map(|&[z, y]| morph.nose_point(y, z)).collect()
+}
+
+/// 鼻の下の顔を隠す領域（閉じた線）。鼻の線と同じ x = 0 の面にあるので、
+/// 正面では幅がなくなり、真横では鼻の線と顔の線の奥までを覆う。
+fn nose_mask(morph: &ProfileMorph) -> Result<Polyline> {
+    let (top, bottom) = (NOSE_PROFILE[0][1], NOSE_PROFILE[NOSE_PROFILE.len() - 1][1]);
+    let steps = ((bottom - top) * 2.0).ceil() as usize;
+    let mut points = nose_line(morph)?;
+    for i in (0..=steps).rev() {
+        let y = top + (bottom - top) * i as f64 / steps as f64;
+        // 両端では鼻の線に閉じる。
+        let depth = NOSE_MASK_DEPTH * ((y - top).min(bottom - y) / 2.0).min(1.0);
+        points.push(morph.nose_point(y, profile_at(&PROFILE_FRONT, y).0 - depth)?);
+    }
+    Ok(points)
 }
 
 /// 輪郭の点を描くときの補正。断面モデルの値を、真横で手描きの線に一致するようずらす。
@@ -932,6 +992,15 @@ impl ProfileMorph {
     fn center(&self, row: f64) -> Result<(f64, f64)> {
         let x = bounds(row, self.theta, self.head)?.center;
         Ok(self.apply(x, row, self.side(row)?.right, profile_at(&PROFILE_FRONT, row)))
+    }
+
+    /// 顔の中心の面 (x = 0) にある、高さ y・奥行き z（q = 1 の値）の鼻の点。
+    /// 中心線からの張り出しが z と顔の線の差の sinθ 倍になるので、顔の線と同じ z の点は
+    /// どの角度でも中心線の上にあり、鼻の両端が顔から離れない。
+    fn nose_point(&self, y: f64, z: f64) -> Result<(f64, f64)> {
+        let (center, _) = self.center(y)?;
+        let face_z = profile_at(&PROFILE_FRONT, y).0;
+        Ok((center + self.head.q * (z - face_z) * self.theta.sin(), y))
     }
 
     fn side(&self, row: f64) -> Result<Bounds> {
@@ -1007,6 +1076,8 @@ pub fn build_scene_with(degrees: f64, head: Head, eye_x: f64) -> Result<Scene> {
         outline,
         reference,
         centerline,
+        nose: nose_line(&morph)?,
+        nose_mask: nose_mask(&morph)?,
         eyes,
         chin: (60.0 * q * theta.sin(), Y_MAX),
         eye_level,
@@ -1376,6 +1447,59 @@ mod tests {
                 assert!((a.0 - b.0).hypot(a.1 - b.1) > 10.0, "首の開口が閉じている");
                 assert!((s.eye_level[0].0 - bounds(EYE_Y, rad(90.0), head).unwrap().left).abs() < 1.0);
             }
+        }
+    }
+
+    /// 鼻は正面で縦の直線、真横で指定の形。どの角度でも両端は顔の中心線から離れない。
+    #[test]
+    fn nose_rotates_with_the_head() {
+        for q in QS {
+            for head in heads(q) {
+                let front = scene(0.0, head);
+                assert!(front.nose.iter().chain(&front.nose_mask).all(|p| p.0.abs() < TOL));
+                let side = scene(90.0, head);
+                for (p, r) in side.nose.iter().zip(&NOSE_PROFILE) {
+                    assert!((p.0 - q * r[0]).abs() < 0.2 * q && p.1 == r[1]);
+                }
+                for deg in [20.0, 45.0, 60.0, 75.0, 90.0] {
+                    let (s, m) = (scene(deg, head), scene(-deg, head));
+                    for (p, n) in s.nose.iter().zip(&m.nose) {
+                        assert!((p.0 + n.0).abs() < TOL);
+                    }
+                    let morph = ProfileMorph::new(deg, head);
+                    for end in [s.nose[0], *s.nose.last().unwrap()] {
+                        assert!((end.0 - morph.center(end.1).unwrap().0).abs() < 0.2 * q);
+                    }
+                }
+                for end in [side.nose[0], *side.nose.last().unwrap()] {
+                    let gap = side
+                        .outline
+                        .iter()
+                        .map(|p| (p.0 - end.0).hypot(p.1 - end.1))
+                        .fold(f64::INFINITY, f64::min);
+                    assert!(gap < 0.5 * q.max(1.0), "q={q} {end:?} off by {gap}");
+                }
+            }
+        }
+    }
+
+    /// 真横で、鼻の範囲の顔の線は隠す領域の中にある（鼻の線と奥の線のあいだ）。
+    #[test]
+    fn nose_mask_covers_the_face_line_at_90() {
+        let (top, bottom) = (NOSE_PROFILE[0][1], NOSE_PROFILE[NOSE_PROFILE.len() - 1][1]);
+        let mask = scene(90.0, Head::wedge(1.0, WEDGE_PHI_DEFAULT)).nose_mask;
+        let inside = |(x, y): (f64, f64)| {
+            let mut hit = false;
+            for (a, b) in mask.iter().zip(mask.iter().cycle().skip(1)) {
+                if (a.1 > y) != (b.1 > y) && x < a.0 + (y - a.1) / (b.1 - a.1) * (b.0 - a.0) {
+                    hit = !hit;
+                }
+            }
+            hit
+        };
+        for i in 1..100 {
+            let y = top + 2.5 + (bottom - top - 5.0) * i as f64 / 100.0;
+            assert!(inside(profile_at(&PROFILE_FRONT, y)), "y={y}");
         }
     }
 
