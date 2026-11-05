@@ -474,7 +474,7 @@ pub enum ModelError {
     InvalidPlanarInput,
     /// 目の間隔（瞳の中心の |x|）が範囲外、または非有限値。
     InvalidEyeLayout,
-    /// 断面の形のパラメータ（V字の傾き）が範囲外。
+    /// 断面の形のパラメータ（V字の傾き）または縦回転が範囲外。
     InvalidHead,
 }
 
@@ -486,7 +486,7 @@ impl fmt::Display for ModelError {
             Self::EyeOffSurface => "目の点が顔の前面断面上にありません",
             Self::InvalidPlanarInput => "平面モデルの入力が不正です",
             Self::InvalidEyeLayout => "目の間隔は 22〜44 の範囲で指定してください",
-            Self::InvalidHead => "V字の傾きは 0〜40° の範囲で指定してください",
+            Self::InvalidHead => "V字の傾きは 0〜40°、縦回転は ±40° の範囲で指定してください",
         })
     }
 }
@@ -551,16 +551,32 @@ pub struct Head {
     /// 前後方向の倍率（第2.1節）。
     pub q: f64,
     pub front: Front,
+    /// 縦回転（ラジアン）。正で上を向く。横回転より先に頭へ掛かる。
+    pub pitch: f64,
 }
 
 impl Head {
     pub fn ellipse(q: f64) -> Self {
-        Self { q, front: Front::Ellipse }
+        Self { q, front: Front::Ellipse, pitch: 0.0 }
     }
     pub fn wedge(q: f64, phi_degrees: f64) -> Self {
-        Self { q, front: Front::Wedge { phi: rad(phi_degrees) } }
+        Self { q, front: Front::Wedge { phi: rad(phi_degrees) }, pitch: 0.0 }
+    }
+    /// 縦回転を度で指定する。正で上を向く。
+    pub fn with_pitch(self, degrees: f64) -> Self {
+        Self { pitch: rad(degrees), ..self }
+    }
+    /// 縦回転を除いた頭。断面図と数値はこちらで計算する。
+    fn level(self) -> Self {
+        Self { pitch: 0.0, ..self }
     }
 }
+
+/// 縦回転として受け付ける範囲（度）。
+pub const PITCH_MAX: f64 = 40.0;
+/// 縦回転の軸の位置（首の付け根）。真横の輪郭のうなじとあごの裏のあいだ。
+const PITCH_PIVOT_Y: f64 = 125.0;
+const PITCH_PIVOT_Z: f64 = -15.0;
 
 /// V字の傾きとして受け付ける範囲（度）。
 pub const WEDGE_PHI_MIN: f64 = 0.0;
@@ -570,6 +586,9 @@ pub const WEDGE_PHI_DEFAULT: f64 = 20.0;
 
 fn check_head(head: Head) -> Result<()> {
     check_q(head.q)?;
+    if !head.pitch.is_finite() || head.pitch.abs() > rad(PITCH_MAX) + EPS {
+        return Err(ModelError::InvalidHead);
+    }
     if let Front::Wedge { phi } = head.front {
         if !phi.is_finite() || phi < rad(WEDGE_PHI_MIN) - EPS || phi > rad(WEDGE_PHI_MAX) + EPS {
             return Err(ModelError::InvalidHead);
@@ -628,6 +647,23 @@ pub fn rotate(x: f64, y: f64, z: f64, theta: f64) -> Rotated {
         y,
         z: -x * s + z * c,
     }
+}
+
+/// 縦回転。首の付け根を軸に、局所座標の点を左右の軸まわりに回す。
+fn pitch_point(x: f64, y: f64, z: f64, head: Head) -> (f64, f64, f64) {
+    if head.pitch == 0.0 {
+        return (x, y, z);
+    }
+    let (s, c) = head.pitch.sin_cos();
+    let zp = PITCH_PIVOT_Z * head.q;
+    let (dy, dz) = (y - PITCH_PIVOT_Y, z - zp);
+    (x, PITCH_PIVOT_Y + dy * c - dz * s, zp + dz * c + dy * s)
+}
+
+/// 局所座標の点を、縦回転してから横回転する。
+pub fn rotate_head(x: f64, y: f64, z: f64, theta: f64, head: Head) -> Rotated {
+    let (x, y, z) = pitch_point(x, y, z, head);
+    rotate(x, y, z, theta)
 }
 
 /// 高さ y の画面上の左右端と表面中心線（第6.1節・第6.3節）。
@@ -727,18 +763,20 @@ pub fn surface_point(x: f64, y: f64, theta: f64, head: Head) -> Result<SurfacePo
         return Err(ModelError::EyeOffSurface);
     }
     let (s, cc) = theta.sin_cos();
+    // 法線の前向き成分は縦回転で cos 倍になる（法線に上下の成分はない扱い）。
+    let cp = head.pitch.cos();
     let (z, facing) = match sec.front {
         Front::Ellipse => {
             // 第7.1節・第8.1節
             let alpha = (x / a).clamp(-1.0, 1.0).asin();
             let (sa, ca) = alpha.sin_cos();
-            (z_side + d * ca, ca * cc / d - sa * s / a)
+            (z_side + d * ca, ca * cc * cp / d - sa * s / a)
         }
         Front::Wedge { .. } => {
             // V字の片側の平面。外向き法線は (sgn(x)·d, a) / √(a² + d²)。
             let u = (x.abs() / a).min(1.0);
             let n = a.hypot(d);
-            let f = |sg: f64| (a * cc - sg * d * s) / n;
+            let f = |sg: f64| (a * cc * cp - sg * d * s) / n;
             let facing = if x > 0.0 {
                 f(1.0)
             } else if x < 0.0 {
@@ -751,7 +789,7 @@ pub fn surface_point(x: f64, y: f64, theta: f64, head: Head) -> Result<SurfacePo
     };
     Ok(SurfacePoint {
         local: Local { x, y, z },
-        rotated: rotate(x, y, z, theta),
+        rotated: rotate_head(x, y, z, theta, head),
         facing,
         visible: facing >= -EPS,
     })
@@ -869,8 +907,12 @@ pub fn eye(side: f64, theta: f64, head: Head, center_x: f64) -> Result<Eye> {
         .collect::<Result<Vec<_>>>()?;
     runs.extend(visible_runs(&pupil));
 
+    // 目幅と断面図の横線は横回転だけで測る。
     let line = (0..=300)
-        .map(|i| surface_point(side * (inner + EYE_WIDTH * i as f64 / 300.0), EYE_Y, theta, head))
+        .map(|i| {
+            let x = side * (inner + EYE_WIDTH * i as f64 / 300.0);
+            surface_point(x, EYE_Y, theta, head.level())
+        })
         .collect::<Result<Vec<_>>>()?;
     let span = line
         .iter()
@@ -927,8 +969,13 @@ pub fn section_outline(sec: &Section) -> Polyline {
                     (a * al.sin(), z_side + bb * al.cos())
                 })
                 .collect();
-            pts.push((0.0, z_tip));
-            pts.push((a, z_side));
+            // 前面の2枚の平面。縦回転の外形を測れるよう、途中の点も並べる。
+            let steps = 24;
+            for i in 1..=2 * steps {
+                let t = (i as f64 / steps as f64 - 1.0).abs();
+                let x = a * (i as f64 / steps as f64 - 1.0);
+                pts.push((x, z_tip - (z_tip - z_side) * t));
+            }
             pts
         }
     }
@@ -980,23 +1027,156 @@ pub struct Scene {
 }
 
 /// 鼻の線（正面画像の X, Y）。
-fn nose_line(morph: &ProfileMorph) -> Result<Polyline> {
-    NOSE_PROFILE.iter().map(|&[z, y]| morph.nose_point(y, z)).collect()
+fn nose_line(morph: &ProfileMorph, tilt: &Tilt) -> Result<Polyline> {
+    NOSE_PROFILE.iter().map(|&[z, y]| morph.nose_point(y, z, tilt)).collect()
 }
 
 /// 鼻の下の顔を隠す領域（閉じた線）。鼻の線と同じ x = 0 の面にあるので、
 /// 正面では幅がなくなり、真横では鼻の線と顔の線の奥までを覆う。
-fn nose_mask(morph: &ProfileMorph) -> Result<Polyline> {
+fn nose_mask(morph: &ProfileMorph, tilt: &Tilt) -> Result<Polyline> {
     let (top, bottom) = (NOSE_PROFILE[0][1], NOSE_PROFILE[NOSE_PROFILE.len() - 1][1]);
     let steps = ((bottom - top) * 2.0).ceil() as usize;
-    let mut points = nose_line(morph)?;
+    let mut points = nose_line(morph, tilt)?;
     for i in (0..=steps).rev() {
         let y = top + (bottom - top) * i as f64 / steps as f64;
         // 両端では鼻の線に閉じる。
         let depth = NOSE_MASK_DEPTH * ((y - top).min(bottom - y) / 2.0).min(1.0);
-        points.push(morph.nose_point(y, profile_at(&PROFILE_FRONT, y).0 - depth)?);
+        points.push(morph.nose_point(y, profile_at(&PROFILE_FRONT, y).0 - depth, tilt)?);
     }
     Ok(points)
+}
+
+/// 輪郭の半径を測る方向の数。
+const RADIAL_BINS: usize = 240;
+
+/// 縦回転前の輪郭の線を、縦回転後の頭の外形に合わせて動かす写像。
+///
+/// 輪郭になる表面の点は縦回転で入れ替わるので、線の点をそのまま回すと正面で頭が潰れる。
+/// そこで線の点を、頭の中心から見た極座標で動かす。
+/// - 方向：画面内で sinθ の分だけ回す（真横ではそのまま ψ 回り、正面では回らない）。
+/// - 半径：縦回転の前後の外形の半径の比を掛ける。比は cosθ で弱め、真横では 1 にする。
+///
+/// 真横では手描きの線が形を保って回り、正面では線の細部を残したまま外形に沿う。
+#[derive(Debug, Clone)]
+struct RadialMap {
+    /// 縦回転前と後の、頭の中心の画面位置。
+    from: (f64, f64),
+    to: (f64, f64),
+    /// 画面内で回す角度。
+    turn: f64,
+    /// 縦回転前と後の外形の半径。
+    before: Vec<f64>,
+    after: Vec<f64>,
+    fade: f64,
+}
+
+impl RadialMap {
+    fn new(theta: f64, head: Head) -> Result<Self> {
+        let center = |h: Head| {
+            let r = rotate_head(0.0, 70.0, 0.0, theta, h);
+            (r.x, r.y)
+        };
+        let silhouette = |h: Head, c: (f64, f64)| -> Result<Vec<f64>> {
+            let mut points = Vec::with_capacity(173 * 182);
+            for y in 0..=172 {
+                let y = y as f64;
+                points.extend(section_outline(&section(y, h)?).into_iter().map(|(x, z)| {
+                    let r = rotate_head(x, y, z, theta, h);
+                    (r.x, r.y)
+                }));
+            }
+            Ok(radial_profile(points.into_iter(), c))
+        };
+        let (from, to) = (center(head.level()), center(head));
+        Ok(Self {
+            from,
+            to,
+            turn: -head.pitch * theta.sin(),
+            before: silhouette(head.level(), from)?,
+            after: silhouette(head, to)?,
+            fade: theta.cos().abs(),
+        })
+    }
+
+    fn apply(&self, (x, y): (f64, f64)) -> (f64, f64) {
+        let (dx, dy) = (x - self.from.0, y - self.from.1);
+        let angle = dy.atan2(dx);
+        let turned = angle + self.turn;
+        let (s, c) = turned.sin_cos();
+        let ratio = radial_at(&self.after, c, s) / radial_at(&self.before, dx, dy);
+        let r = dx.hypot(dy) * (1.0 + (ratio - 1.0) * self.fade);
+        (self.to.0 + r * c, self.to.1 + r * s)
+    }
+}
+
+/// 方向 (dx, dy) の半径を、隣り合う方向の値から補間する。
+fn radial_at(r: &[f64], dx: f64, dy: f64) -> f64 {
+    let f = radial_bin(dx, dy);
+    let i = f.floor() as usize % RADIAL_BINS;
+    let t = f - f.floor();
+    r[i] * (1.0 - t) + r[(i + 1) % RADIAL_BINS] * t
+}
+
+fn radial_bin(dx: f64, dy: f64) -> f64 {
+    let tau = std::f64::consts::TAU;
+    dy.atan2(dx).rem_euclid(tau) / tau * RADIAL_BINS as f64
+}
+
+/// 方向ごとの最大の半径。点のなかった方向は両隣から補う。
+fn radial_profile(points: impl Iterator<Item = (f64, f64)>, c: (f64, f64)) -> Vec<f64> {
+    let n = RADIAL_BINS;
+    let mut r = vec![0.0_f64; n];
+    for (x, y) in points {
+        let (dx, dy) = (x - c.0, y - c.1);
+        let i = radial_bin(dx, dy).round() as usize % n;
+        r[i] = r[i].max(dx.hypot(dy));
+    }
+    let filled: Vec<f64> = (0..n)
+        .map(|i| {
+            if r[i] > 0.0 {
+                return r[i];
+            }
+            let before = (1..n).find(|d| r[(i + n - d) % n] > 0.0).unwrap_or(1);
+            let after = (1..n).find(|d| r[(i + d) % n] > 0.0).unwrap_or(1);
+            let (a, b) = (r[(i + n - before) % n], r[(i + after) % n]);
+            a + (b - a) * before as f64 / (before + after) as f64
+        })
+        .collect();
+    // 断面の点の並びで出る細かな凹凸をならす。
+    (0..n)
+        .map(|i| (filled[(i + n - 1) % n] + 2.0 * filled[i] + filled[(i + 1) % n]) / 4.0)
+        .collect()
+}
+
+/// 顔の図の線に縦回転を掛ける。縦回転なしのときは何もしない。
+#[derive(Debug, Clone)]
+struct Tilt {
+    theta: f64,
+    head: Head,
+    map: Option<RadialMap>,
+}
+
+impl Tilt {
+    fn new(theta: f64, head: Head) -> Result<Self> {
+        let map = (head.pitch != 0.0).then(|| RadialMap::new(theta, head)).transpose()?;
+        Ok(Self { theta, head, map })
+    }
+
+    /// 横回転後の画面の点 `p` と奥行き `depth` から、頭の局所座標へ戻して縦回転する。
+    fn point(&self, p: (f64, f64), depth: f64) -> (f64, f64) {
+        if self.head.pitch == 0.0 {
+            return p;
+        }
+        let (s, c) = self.theta.sin_cos();
+        let (x, z) = (p.0 * c - depth * s, p.0 * s + depth * c);
+        let r = rotate_head(x, p.1, z, self.theta, self.head);
+        (r.x, r.y)
+    }
+
+    /// 輪郭の線の上の点。
+    fn edge(&self, p: (f64, f64)) -> (f64, f64) {
+        self.map.as_ref().map_or(p, |m| m.apply(p))
+    }
 }
 
 /// 輪郭の点を描くときの補正。断面モデルの値を、真横で手描きの線に一致するようずらす。
@@ -1077,10 +1257,12 @@ impl ProfileMorph {
     /// 顔の中心の面 (x = 0) にある、高さ y・奥行き z（q = 1 の値）の鼻の点。
     /// 中心線からの張り出しが z と顔の線の差の sinθ 倍になるので、顔の線と同じ z の点は
     /// どの角度でも中心線の上にあり、鼻の両端が顔から離れない。
-    fn nose_point(&self, y: f64, z: f64) -> Result<(f64, f64)> {
+    fn nose_point(&self, y: f64, z: f64, tilt: &Tilt) -> Result<(f64, f64)> {
         let (center, _) = self.center(y)?;
         let face_z = profile_at(&PROFILE_FRONT, y).0;
-        Ok((center + self.head.q * (z - face_z) * self.theta.sin(), y))
+        let q = self.head.q;
+        let p = (center + q * (z - face_z) * self.theta.sin(), y);
+        Ok(tilt.point(p, q * z * self.theta.cos()))
     }
 
     fn side(&self, row: f64) -> Result<Bounds> {
@@ -1104,6 +1286,7 @@ pub fn build_scene_with(degrees: f64, head: Head, eye_x: f64) -> Result<Scene> {
     let theta = rad(degrees);
     let morph = ProfileMorph::new(degrees, head);
     let frontal = ProfileMorph::new(0.0, Head::ellipse(1.0));
+    let tilt = Tilt::new(theta, head)?;
     let split = (PROFILE_SPLIT_ROW * 2.0) as usize;
     let mut outline = Vec::with_capacity(692);
     let mut reference = Vec::with_capacity(692);
@@ -1111,21 +1294,25 @@ pub fn build_scene_with(degrees: f64, head: Head, eye_x: f64) -> Result<Scene> {
     // 正面の輪郭 reference は θ > 0 と同じ向きに、画面左の下部から回る。
     for i in split..=344 {
         let y = i as f64 / 2.0;
-        outline.push(morph.back(y, &PROFILE_JAW)?);
+        outline.push(tilt.edge(morph.back(y, &PROFILE_JAW)?));
         reference.push(frontal.back(y, &PROFILE_JAW)?);
     }
     for i in (0..=344).rev() {
         let y = i as f64 / 2.0;
-        outline.push(morph.front(y)?);
+        outline.push(tilt.edge(morph.front(y)?));
         reference.push(frontal.front(y)?);
     }
     for i in 0..=split {
         let y = i as f64 / 2.0;
-        outline.push(morph.back(y, &PROFILE_BACK)?);
+        outline.push(tilt.edge(morph.back(y, &PROFILE_BACK)?));
         reference.push(frontal.back(y, &PROFILE_BACK)?);
     }
     let centerline = (0..=172)
-        .map(|y| morph.center(y as f64))
+        .map(|y| {
+            let y = y as f64;
+            let depth = section(y, head)?.z_tip * theta.cos();
+            Ok(tilt.point(morph.center(y)?, depth))
+        })
         .collect::<Result<Vec<_>>>()?;
     let mut eyes = [eye(-1.0, theta, head, eye_x)?, eye(1.0, theta, head, eye_x)?];
     for e in &mut eyes {
@@ -1141,8 +1328,9 @@ pub fn build_scene_with(degrees: f64, head: Head, eye_x: f64) -> Result<Scene> {
             EyeRole::Far
         };
     }
-    let level_front = morph.front(EYE_Y)?;
-    let level_back = morph.back(EYE_Y, &PROFILE_BACK)?;
+    let level_front = tilt.edge(morph.front(EYE_Y)?);
+    let level_back = tilt.edge(morph.back(EYE_Y, &PROFILE_BACK)?);
+    let chin = tilt.edge((60.0 * q * theta.sin(), Y_MAX));
     let eye_level = if morph.dir > 0.0 {
         [level_back, level_front]
     } else {
@@ -1157,10 +1345,10 @@ pub fn build_scene_with(degrees: f64, head: Head, eye_x: f64) -> Result<Scene> {
         outline,
         reference,
         centerline,
-        nose: nose_line(&morph)?,
-        nose_mask: nose_mask(&morph)?,
+        nose: nose_line(&morph, &tilt)?,
+        nose_mask: nose_mask(&morph, &tilt)?,
         eyes,
-        chin: (60.0 * q * theta.sin(), Y_MAX),
+        chin,
         eye_level,
         section: cross_section(theta, head)?,
     })
@@ -1646,6 +1834,88 @@ mod tests {
         }
     }
 
+    /// 真横の縦回転は画面内の回転なので、手描きの線が形を保ったまま首の付け根を軸に回る。
+    #[test]
+    fn pitch_at_90_rotates_the_profile_rigidly() {
+        let head = Head::wedge(1.0, WEDGE_PHI_DEFAULT);
+        for pitch in [-30.0, 15.0, 40.0] {
+            let flat = scene(90.0, head);
+            let turned = scene(90.0, head.with_pitch(pitch));
+            let (s, c) = rad(pitch).sin_cos();
+            for (p, t) in flat.outline.iter().zip(&turned.outline) {
+                let (dz, dy) = (p.0 - PITCH_PIVOT_Z, p.1 - PITCH_PIVOT_Y);
+                let want = (PITCH_PIVOT_Z + dz * c + dy * s, PITCH_PIVOT_Y + dy * c - dz * s);
+                let gap = (t.0 - want.0).hypot(t.1 - want.1);
+                assert!(gap < 1e-6, "pitch={pitch} {p:?} off by {gap}");
+            }
+            for (p, t) in flat.nose.iter().zip(&turned.nose) {
+                let (dz, dy) = (p.0 - PITCH_PIVOT_Z, p.1 - PITCH_PIVOT_Y);
+                assert!((t.0 - (PITCH_PIVOT_Z + dz * c + dy * s)).abs() < TOL);
+                assert!((t.1 - (PITCH_PIVOT_Y + dy * c - dz * s)).abs() < TOL);
+            }
+        }
+    }
+
+    /// 上を向くと顔の点は上へ、下を向くと下へ動き、左右は対称のまま。
+    #[test]
+    fn pitch_moves_the_face_up_and_down() {
+        let head = Head::wedge(1.0, WEDGE_PHI_DEFAULT);
+        let flat = scene(0.0, head);
+        let up = scene(0.0, head.with_pitch(30.0));
+        let down = scene(0.0, head.with_pitch(-30.0));
+        assert!(up.chin.1 < flat.chin.1 && flat.chin.1 < down.chin.1);
+        assert!(up.nose[0].1 < flat.nose[0].1 && flat.nose[0].1 < down.nose[0].1);
+        for s in [&up, &down] {
+            assert!(s.chin.0.abs() < TOL && s.nose.iter().all(|p| p.0.abs() < TOL));
+            let (l, r) = (
+                s.outline.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
+                s.outline.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
+            );
+            assert!((l + r).abs() < 1e-6);
+            // 頭は潰れない：縦の大きさは 0° の 3/4 以上を保つ。
+            let height = |s: &Scene| {
+                let ys = s.outline.iter().map(|p| p.1);
+                ys.clone().fold(f64::NEG_INFINITY, f64::max) - ys.fold(f64::INFINITY, f64::min)
+            };
+            assert!(height(s) > 0.75 * height(&flat));
+        }
+    }
+
+    /// 縦回転は目幅などの数値と断面図を変えない。
+    #[test]
+    fn pitch_keeps_stats_and_section() {
+        for head in heads(1.0) {
+            for deg in [0.0, 30.0, 70.0] {
+                let flat = scene(deg, head);
+                let s = scene(deg, head.with_pitch(25.0));
+                assert_eq!(s.section, flat.section);
+                for (a, b) in s.eyes.iter().zip(&flat.eyes) {
+                    assert_eq!(a.percent, b.percent);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn all_values_finite_with_pitch() {
+        for q in [0.55, 1.0] {
+            for head in heads(q) {
+                for pitch in [-PITCH_MAX, -20.0, 20.0, PITCH_MAX] {
+                    for deg in (-90..=90).step_by(15) {
+                        let s = scene(deg as f64, head.with_pitch(pitch));
+                        let lines = s.outline.iter().chain(&s.nose).chain(&s.centerline);
+                        assert!(lines.clone().all(|p| p.0.is_finite() && p.1.is_finite()));
+                        // 顔の図の表示範囲に収まる。
+                        assert!(lines.clone().all(|p| p.0.abs() < 125.0));
+                        for p in lines.clone() {
+                            assert!(p.1 > -30.0 && p.1 < 215.0, "deg={deg} pitch={pitch} {p:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn rejects_invalid_input() {
         let h = Head::ellipse(1.0);
@@ -1661,6 +1931,10 @@ mod tests {
         );
         assert_eq!(
             build_scene_with(0.0, Head::wedge(1.0, -1.0), EYE_CENTER_X),
+            Err(ModelError::InvalidHead)
+        );
+        assert_eq!(
+            build_scene_with(0.0, h.with_pitch(41.0), EYE_CENTER_X),
             Err(ModelError::InvalidHead)
         );
         assert_eq!(shape(-1.0, 1.0), Err(ModelError::InvalidShapeInput));

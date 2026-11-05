@@ -5,7 +5,7 @@ use leptos::prelude::*;
 
 use crate::model::{
     build_scene_with, runs_where, Eye, Head, Polyline, Scene, EYE_CENTER_X, EYE_CENTER_X_MAX,
-    EYE_CENTER_X_MIN, EYE_IMAGE_FIT_MAX, EYE_WIDTH, EYE_Y, WEDGE_PHI_DEFAULT, WEDGE_PHI_MAX,
+    EYE_CENTER_X_MIN, EYE_IMAGE_FIT_MAX, EYE_WIDTH, EYE_Y, PITCH_MAX, WEDGE_PHI_DEFAULT, WEDGE_PHI_MAX,
     WEDGE_PHI_MIN,
 };
 use crate::texture::{self, EYES};
@@ -52,6 +52,14 @@ fn angle_label(deg: f64) -> String {
     }
 }
 
+fn pitch_label(deg: f64) -> String {
+    if deg == 0.0 {
+        "水平 0°".into()
+    } else {
+        format!("{}{}°", if deg < 0.0 { "下" } else { "上" }, deg.abs())
+    }
+}
+
 /// 手前（または画面左）を先に並べる。
 fn ordered_eyes(s: &Scene) -> [&Eye; 2] {
     if s.eyes[0].role.is_near_style() {
@@ -64,6 +72,7 @@ fn ordered_eyes(s: &Scene) -> [&Eye; 2] {
 #[component]
 pub fn App() -> impl IntoView {
     let (deg, set_deg) = signal(0.0_f64);
+    let (pitch, set_pitch) = signal(0.0_f64);
     let (q, set_q) = signal(1.0_f64);
     let (show_ref, set_show_ref) = signal(false);
     let (use_image, set_use_image) = signal(true);
@@ -74,11 +83,12 @@ pub fn App() -> impl IntoView {
     let (phi, set_phi) = signal(WEDGE_PHI_DEFAULT);
 
     let head = move || {
-        if wedge.get() {
+        let head = if wedge.get() {
             Head::wedge(q.get(), phi.get())
         } else {
             Head::ellipse(q.get())
-        }
+        };
+        head.with_pitch(pitch.get())
     };
     let scene = Memo::new(move |_| build_scene_with(deg.get(), head(), eye_x.get()));
     let eye_x_label = move || format!("瞳 ±{:.1}（間隔 {:.1}）", eye_x.get(), 2.0 * eye_x.get());
@@ -111,16 +121,16 @@ pub fn App() -> impl IntoView {
                 </label>
                 <label class="slider">
                     <span class="row">
-                        <span>"奥行き倍率 q"</span>
-                        <output>{move || format!("{:.2}倍", q.get())}</output>
+                        <span>"縦回転 ψ"</span>
+                        <output>{move || pitch_label(pitch.get())}</output>
                     </span>
                     <input
-                        type="range" min="0.55" max="1.35" step="0.01"
-                        prop:value=move || q.get().to_string()
-                        attr:aria-valuetext=move || format!("{:.2}倍", q.get())
+                        type="range" min=(-PITCH_MAX).to_string() max=PITCH_MAX.to_string() step="1"
+                        prop:value=move || pitch.get().to_string()
+                        attr:aria-valuetext=move || pitch_label(pitch.get())
                         on:input=move |ev| {
                             if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-                                set_q.set(v);
+                                set_pitch.set(v);
                             }
                         }
                     />
@@ -194,6 +204,22 @@ pub fn App() -> impl IntoView {
                     />
                     <span class="hint muted">"0° で平らな顔、大きいほど鋭いV字"</span>
                 </label>
+                <label class="slider">
+                    <span class="row">
+                        <span>"奥行き倍率 q"</span>
+                        <output>{move || format!("{:.2}倍", q.get())}</output>
+                    </span>
+                    <input
+                        type="range" min="0.55" max="1.35" step="0.01"
+                        prop:value=move || q.get().to_string()
+                        attr:aria-valuetext=move || format!("{:.2}倍", q.get())
+                        on:input=move |ev| {
+                            if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                                set_q.set(v);
+                            }
+                        }
+                    />
+                </label>
                 <label class="check">
                     <input
                         type="checkbox"
@@ -227,6 +253,7 @@ pub fn App() -> impl IntoView {
                     <li>"目の位置・前後の厚み・回転軸・顎の奥行きは説明用の設計値（仮定）です。"</li>
                     <li>"45°を超えると、輪郭は断面の計算結果から真横の手描きの横顔（唇・首の開口）へなめらかに変わります。これは見た目の指定に合わせる補正で、断面図と数値は断面モデルのままです。"</li>
                     <li>"頭頂の高さは、正面を含むどの角度でも真横の指定と同じです。正面の頭の上部は手描きの形で、45°にかけて計算上の形へ変わります。"</li>
+                    <li>"縦回転 ψ は首の付け根を軸に、横回転より先に頭へ掛かります。真横では横顔がそのまま傾き、正面では輪郭が頭の外形に沿って変わります。断面図と数値は横回転だけの値です。"</li>
                     <li>"鼻は顔の中心の面にある線で、顔の上のレイヤーに描きます。正面では縦の直線で、回すと横に張り出し、真横で指定の形になります。"</li>
                     <li>"断面の前面は「ゆるやかなV字」（左右の角から中心線へ向かう2枚の平面）と「楕円（仕様）」を切り替えられます。V字でも中心線と後頭部の位置は楕円と同じで、左右の角が前に出るぶん、回したときに球のような丸い動きになりにくくなります。"</li>
                     <li>"鼻・耳・髪・口・首、眼球の立体、上下の回転、遠近法は省略しています（正射影）。"</li>
@@ -285,7 +312,7 @@ fn Figures(scene: Scene, show_ref: bool, use_image: bool) -> impl IntoView {
                 <div class="stat">
                     <dt>"顎先の横ずれ"</dt>
                     <dd>
-                        <span class="big">{format!("{:.1}", s.chin.0)}</span>
+                        <span class="big">{format!("{:.1}", 60.0 * s.q * s.theta.sin())}</span>
                         <span class="sub">"60q·sinθ"</span>
                     </dd>
                 </div>
@@ -324,9 +351,13 @@ fn FaceView(scene: Scene, show_ref: bool, use_image: bool) -> impl IntoView {
     view! {
         <svg
             class="face"
-            viewBox="-120 -12 240 202"
+            viewBox="-125 -30 250 245"
             role="img"
-            aria-label=format!("{}に回転した顔", angle_label(s.degrees))
+            aria-label=format!(
+                "{}・{}に回転した顔",
+                angle_label(s.degrees),
+                pitch_label(s.head.pitch.to_degrees().round()),
+            )
         >
             {show_ref.then(|| view! { <path class="reference" d=path_d(&s.reference, true) /> })}
             <path class="guide" d=path_d(&s.eye_level, false) />
@@ -337,7 +368,7 @@ fn FaceView(scene: Scene, show_ref: bool, use_image: bool) -> impl IntoView {
             <path class="nose" d=path_d(&s.nose, false) />
             <circle class="dot" cx=fmt(s.eye_level[0].0) cy=fmt(s.eye_level[0].1) r="1.5" />
             <circle class="dot" cx=fmt(s.eye_level[1].0) cy=fmt(s.eye_level[1].1) r="1.5" />
-            <circle class="dot" cx=fmt(s.chin.0) cy="172" r="1.7" />
+            <circle class="dot" cx=fmt(s.chin.0) cy=fmt(s.chin.1) r="1.7" />
         </svg>
     }
 }

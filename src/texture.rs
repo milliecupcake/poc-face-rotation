@@ -137,12 +137,13 @@ fn cell(
         return Ok(None);
     }
     let a = (p10.rotated.x - p00.rotated.x) / (u1 - u0);
+    let b = (p10.rotated.y - p00.rotated.y) / (u1 - u0);
     let c = (p01.rotated.x - p00.rotated.x) / (v1 - v0);
     let d = (p01.rotated.y - p00.rotated.y) / (v1 - v0);
     let e = p00.rotated.x - a * u0 - c * v0;
-    let f = p00.rotated.y - d * v0;
+    let f = p00.rotated.y - b * u0 - d * v0;
     Ok(Some(Cell {
-        matrix: [a, 0.0, c, d, e, f],
+        matrix: [a, b, c, d, e, f],
         src: [
             u0 - OVERLAP,
             v0 - OVERLAP,
@@ -197,6 +198,18 @@ mod tests {
                 assert!(left.iter().all(|c| c.side > 0.0 || zero(c)));
             }
         }
+    }
+
+    /// 縦回転で、セルは同じ頭の表面の点へ動く。
+    #[test]
+    fn cells_follow_pitch() {
+        let head = Head::wedge(1.0, WEDGE_PHI_DEFAULT).with_pitch(25.0);
+        let flat = cells(&EYES, rad(30.0), Head::wedge(1.0, WEDGE_PHI_DEFAULT), EYE_CENTER_X).unwrap();
+        let tilted = cells(&EYES, rad(30.0), head, EYE_CENTER_X).unwrap();
+        assert!(!tilted.is_empty());
+        assert!(tilted.iter().all(|c| c.matrix.iter().all(|v| v.is_finite())));
+        let mean_y = |cs: &[Cell]| cs.iter().map(|c| c.matrix[5]).sum::<f64>() / cs.len() as f64;
+        assert!(mean_y(&tilted) < mean_y(&flat));
     }
 
     #[test]
