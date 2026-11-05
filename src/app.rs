@@ -225,6 +225,7 @@ pub fn App() -> impl IntoView {
                 <ul>
                     <li>"正面輪郭の左右幅は指定の輪郭画像から測った値です。前後の厚みは正面からは決まらないため設計値のままで、3D形状を推定したものではありません。"</li>
                     <li>"目の位置・前後の厚み・回転軸・顎の奥行きは説明用の設計値（仮定）です。"</li>
+                    <li>"45°を超えると、輪郭は断面の計算結果から真横の手描きの横顔（鼻・唇・首の開口）へなめらかに変わります。これは見た目の指定に合わせる補正で、断面図と数値は断面モデルのままです。"</li>
                     <li>"断面の前面は「ゆるやかなV字」（左右の角から中心線へ向かう2枚の平面）と「楕円（仕様）」を切り替えられます。V字でも中心線と後頭部の位置は楕円と同じで、左右の角が前に出るぶん、回したときに球のような丸い動きになりにくくなります。"</li>
                     <li>"鼻・耳・髪・口・首、眼球の立体、上下の回転、遠近法は省略しています（正射影）。"</li>
                     <li>{format!("目幅は y={EYE_Y} の目の横線のうち、見えている部分の投影幅を正面（{EYE_WIDTH:.1}）に対する比で示しています。")}</li>
@@ -303,7 +304,6 @@ fn Figures(scene: Scene, show_ref: bool, use_image: bool) -> impl IntoView {
 #[component]
 fn FaceView(scene: Scene, show_ref: bool, use_image: bool) -> impl IntoView {
     let s = scene;
-    let b = s.section.bounds;
     let eyes = if use_image {
         image_eyes(&s).into_any()
     } else {
@@ -329,10 +329,10 @@ fn FaceView(scene: Scene, show_ref: bool, use_image: bool) -> impl IntoView {
             {show_ref.then(|| view! { <path class="reference" d=path_d(&s.reference, true) /> })}
             <path class="guide" d=path_d(&s.eye_level, false) />
             <path class="guide center" d=path_d(&s.centerline, false) />
-            <path class="outline" d=path_d(&s.outline, true) />
+            <path class="outline" d=path_d(&s.outline, false) />
             {eyes}
-            <circle class="dot" cx=fmt(b.left) cy=fmt(EYE_Y) r="1.5" />
-            <circle class="dot" cx=fmt(b.right) cy=fmt(EYE_Y) r="1.5" />
+            <circle class="dot" cx=fmt(s.eye_level[0].0) cy=fmt(s.eye_level[0].1) r="1.5" />
+            <circle class="dot" cx=fmt(s.eye_level[1].0) cy=fmt(s.eye_level[1].1) r="1.5" />
             <circle class="dot" cx=fmt(s.chin.0) cy="172" r="1.7" />
         </svg>
     }

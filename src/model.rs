@@ -125,6 +125,194 @@ const SPEC_BC_ROWS: [[f64; 3]; 15] = [
     [172.0, 0.0, 60.0],
 ];
 
+// 真横（|θ| = 90°、q = 1）の輪郭の手描き指定。各行は [row, X, Y] で、row は断面モデルの
+// 高さ y のどの輪郭点がこの点へ動くかを表す。X, Y はモデル単位で、指定画像の後頭部の点
+// (y = EYE_Y) と顎先の点を基準に測った。row ≥ 30 はおおむね row = Y、
+// 頭頂側は線の長さに沿って割り当てている（指定の頭頂は Y ≈ −10.8 で、モデルの y = 0 より上）。
+
+/// 額〜鼻〜唇〜顎先の線。
+const PROFILE_FRONT: [[f64; 3]; 70] = [
+    [0.00, -0.79, -10.83],
+    [0.64, 1.13, -10.82],
+    [1.88, 4.82, -10.43],
+    [2.73, 7.37, -10.37],
+    [3.41, 9.36, -10.02],
+    [5.07, 14.29, -9.50],
+    [6.42, 18.26, -8.74],
+    [6.83, 19.50, -8.62],
+    [7.23, 20.65, -8.31],
+    [9.06, 26.02, -7.32],
+    [11.93, 34.33, -5.13],
+    [13.26, 38.08, -3.86],
+    [15.38, 43.79, -1.09],
+    [16.71, 47.24, 0.93],
+    [19.22, 53.36, 5.30],
+    [23.30, 62.80, 13.03],
+    [24.58, 65.54, 15.73],
+    [25.61, 67.43, 18.16],
+    [26.62, 68.97, 20.74],
+    [27.48, 70.11, 23.06],
+    [29.20, 71.91, 27.89],
+    [38.01, 74.93, 38.01],
+    [43.90, 76.25, 43.90],
+    [46.94, 76.68, 46.94],
+    [48.61, 76.79, 48.61],
+    [50.61, 77.14, 50.61],
+    [52.96, 77.18, 52.96],
+    [54.60, 77.37, 54.60],
+    [60.07, 77.48, 60.07],
+    [61.67, 77.27, 61.67],
+    [65.44, 76.01, 65.44],
+    [72.76, 72.99, 72.76],
+    [78.32, 70.33, 78.32],
+    [81.14, 69.38, 81.14],
+    [85.26, 68.46, 85.26],
+    [86.71, 68.34, 86.71],
+    [88.72, 67.99, 88.72],
+    [92.77, 67.98, 92.77],
+    [96.77, 68.68, 96.77],
+    [102.90, 70.45, 102.90],
+    [124.04, 77.44, 124.04],
+    [125.84, 77.74, 125.84],
+    [131.24, 79.20, 131.24],
+    [132.90, 79.27, 132.90],
+    [133.84, 78.94, 133.84],
+    [134.77, 78.11, 134.77],
+    [136.52, 75.62, 136.52],
+    [138.19, 73.52, 138.19],
+    [139.10, 72.74, 139.10],
+    [139.86, 72.50, 139.86],
+    [140.69, 72.46, 140.69],
+    [142.67, 72.85, 142.67],
+    [143.89, 72.99, 143.89],
+    [144.45, 72.93, 144.45],
+    [144.92, 72.62, 144.92],
+    [146.81, 70.21, 146.81],
+    [147.72, 69.35, 147.72],
+    [149.40, 68.22, 149.40],
+    [152.24, 66.79, 152.24],
+    [155.04, 65.79, 155.04],
+    [156.41, 65.46, 156.41],
+    [158.06, 65.31, 158.06],
+    [163.32, 64.01, 163.32],
+    [168.84, 62.33, 168.84],
+    [169.36, 62.07, 169.36],
+    [169.63, 61.81, 169.63],
+    [170.02, 60.94, 170.02],
+    [170.39, 60.51, 170.39],
+    [171.46, 60.05, 171.46],
+    [172.00, 60.00, 172.00],
+];
+
+/// 後頭部〜うなじの線。
+const PROFILE_BACK: [[f64; 3]; 57] = [
+    [0.00, -0.79, -10.83],
+    [0.76, -2.93, -10.82],
+    [1.93, -6.20, -10.43],
+    [2.60, -8.09, -10.34],
+    [4.63, -13.72, -9.46],
+    [5.34, -15.65, -8.95],
+    [6.29, -18.30, -8.62],
+    [7.29, -21.01, -7.92],
+    [7.80, -22.42, -7.71],
+    [8.50, -24.31, -7.10],
+    [9.57, -27.23, -6.39],
+    [12.54, -35.19, -3.89],
+    [13.10, -36.68, -3.35],
+    [13.88, -38.65, -2.42],
+    [15.93, -43.71, 0.38],
+    [18.29, -49.35, 3.82],
+    [19.43, -52.03, 5.62],
+    [20.23, -53.83, 6.97],
+    [20.99, -55.33, 8.46],
+    [22.43, -57.70, 11.77],
+    [22.79, -58.16, 12.65],
+    [23.57, -58.93, 14.69],
+    [25.15, -61.50, 18.34],
+    [27.31, -64.81, 23.41],
+    [29.15, -67.39, 27.92],
+    [31.93, -69.09, 31.93],
+    [34.95, -70.09, 34.95],
+    [40.20, -71.39, 40.20],
+    [42.58, -71.86, 42.58],
+    [44.03, -71.98, 44.03],
+    [45.97, -72.50, 45.97],
+    [61.82, -72.53, 61.82],
+    [64.88, -72.13, 64.88],
+    [67.65, -72.08, 67.65],
+    [69.22, -71.74, 69.22],
+    [71.33, -71.65, 71.33],
+    [72.91, -71.31, 72.91],
+    [74.36, -71.19, 74.36],
+    [83.97, -69.01, 83.97],
+    [88.85, -67.34, 88.85],
+    [92.11, -66.39, 92.11],
+    [94.53, -65.50, 94.53],
+    [98.52, -63.74, 98.52],
+    [101.55, -61.08, 103.43],
+    [103.71, -58.18, 107.80],
+    [105.82, -55.02, 111.85],
+    [107.05, -52.91, 113.98],
+    [107.82, -51.49, 115.20],
+    [108.94, -49.67, 117.23],
+    [112.06, -44.08, 122.37],
+    [112.99, -42.31, 123.77],
+    [113.81, -40.58, 124.76],
+    [117.81, -31.93, 129.22],
+    [119.21, -29.07, 131.12],
+    [120.73, -26.13, 133.34],
+    [122.88, -22.22, 136.82],
+    [124.00, -20.28, 138.74],
+];
+
+/// あごの裏の線。
+const PROFILE_JAW: [[f64; 3]; 23] = [
+    [124.00, -15.14, 123.94],
+    [124.69, -14.73, 124.63],
+    [125.63, -14.43, 125.57],
+    [131.21, -11.85, 131.15],
+    [135.51, -9.30, 135.46],
+    [137.02, -8.28, 136.97],
+    [138.61, -6.95, 138.56],
+    [140.72, -4.84, 140.68],
+    [144.62, -0.24, 144.58],
+    [147.31, 3.35, 147.28],
+    [151.57, 9.73, 151.54],
+    [154.25, 14.19, 154.22],
+    [157.06, 19.24, 157.04],
+    [160.12, 25.47, 160.10],
+    [163.66, 33.43, 163.64],
+    [165.86, 39.15, 165.86],
+    [166.74, 41.79, 166.73],
+    [167.38, 44.52, 167.38],
+    [168.05, 46.60, 168.04],
+    [170.83, 57.87, 170.83],
+    [171.24, 58.77, 171.24],
+    [171.76, 59.40, 171.76],
+    [172.00, 60.00, 172.00],
+];
+
+/// 左端の輪郭のうち、真横で `PROFILE_BACK` の終わり（うなじ）と `PROFILE_JAW` の始まり
+/// （あごの裏）に分かれる高さ。真横ではこの2点の間が首の開口になる。
+const PROFILE_SPLIT_ROW: f64 = 124.0;
+
+/// 手描きの横顔を効かせ始める |θ|（度）。45° の輪郭の指定を保つため、ここまでは 0。
+const PROFILE_START_DEGREES: f64 = 45.0;
+
+/// 真横の輪郭へ寄せる重み。|θ| ≤ 45° で 0、90° で 1 になるなめらかな階段。
+fn profile_weight(degrees: f64) -> f64 {
+    let t = ((degrees.abs() - PROFILE_START_DEGREES) / (90.0 - PROFILE_START_DEGREES)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// 表の row での (X, Y) を線形補間で返す。
+fn profile_at(table: &[[f64; 3]], row: f64) -> (f64, f64) {
+    let i = table.partition_point(|r| r[0] < row).clamp(1, table.len() - 1);
+    let (p, n) = (table[i - 1], table[i]);
+    let t = ((row - p[0]) / (n[0] - p[0])).clamp(0.0, 1.0);
+    (p[1] + (n[1] - p[1]) * t, p[2] + (n[2] - p[2]) * t)
+}
+
 /// 区分3次Hermite補間の1系列（第5.3節）。内部点の傾きは重み付き調和平均。
 struct Curve {
     ys: Vec<f64>,
@@ -681,9 +869,11 @@ pub struct Scene {
     /// 瞳（目の中心）の |x|。
     pub eye_x: f64,
     pub theta: f64,
-    /// 回転後の輪郭（閉じたパス）。
+    /// 回転後の輪郭。|θ| > 45° では断面モデルの輪郭を手描きの横顔へ寄せたもの。
+    /// あごの裏から始まり、顎先・顔の前面・頭頂・後頭部を通ってうなじで終わる開いた線。
+    /// |θ| ≤ 45° では始点と終点が一致し、真横では離れて首の開口になる。
     pub outline: Polyline,
-    /// 正面の輪郭（q = 1, θ = 0）。回転角・q で動かない。
+    /// 正面の輪郭（q = 1, θ = 0）。回転角・q で動かない。`outline` と同じ順の点列。
     pub reference: Polyline,
     pub centerline: Polyline,
     /// [画面左の目 (s=−1), 画面右の目 (s=+1)]
@@ -691,6 +881,62 @@ pub struct Scene {
     pub chin: (f64, f64),
     pub eye_level: [(f64, f64); 2],
     pub section: CrossSection,
+}
+
+/// 輪郭の点を描くときの補正。断面モデルの値を、真横で手描きの線に一致するようずらす。
+/// `bounds` や断面図は断面モデルのままで、ここを通るのは顔の図の線だけ。
+#[derive(Debug, Clone, Copy)]
+struct ProfileMorph {
+    theta: f64,
+    head: Head,
+    weight: f64,
+    /// 真横で顔の前面が画面右なら +1、左なら −1。
+    dir: f64,
+}
+
+impl ProfileMorph {
+    fn new(degrees: f64, head: Head) -> Self {
+        Self {
+            theta: rad(degrees),
+            head,
+            weight: profile_weight(degrees),
+            dir: if degrees < 0.0 { -1.0 } else { 1.0 },
+        }
+    }
+
+    /// 断面モデルの点 (`x`, `row`) を、真横のモデルの点 `side_x`（θ = +90°）が
+    /// 手描きの点 `target` に重なるのと同じだけ動かす。
+    fn apply(&self, x: f64, row: f64, side_x: f64, target: (f64, f64)) -> (f64, f64) {
+        let (tx, ty) = target;
+        (
+            x + self.weight * self.dir * (self.head.q * tx - side_x),
+            row + self.weight * (ty - row),
+        )
+    }
+
+    /// 顔の前面の輪郭の点。
+    fn front(&self, row: f64) -> Result<(f64, f64)> {
+        let b = bounds(row, self.theta, self.head)?;
+        let x = if self.dir > 0.0 { b.right } else { b.left };
+        Ok(self.apply(x, row, self.side(row)?.right, profile_at(&PROFILE_FRONT, row)))
+    }
+
+    /// 後ろ側の輪郭の点。`table` は `PROFILE_BACK` か `PROFILE_JAW`。
+    fn back(&self, row: f64, table: &[[f64; 3]]) -> Result<(f64, f64)> {
+        let b = bounds(row, self.theta, self.head)?;
+        let x = if self.dir > 0.0 { b.left } else { b.right };
+        Ok(self.apply(x, row, self.side(row)?.left, profile_at(table, row)))
+    }
+
+    /// 表面の中心線の点。真横では顔の前面の輪郭に重なる。
+    fn center(&self, row: f64) -> Result<(f64, f64)> {
+        let x = bounds(row, self.theta, self.head)?.center;
+        Ok(self.apply(x, row, self.side(row)?.right, profile_at(&PROFILE_FRONT, row)))
+    }
+
+    fn side(&self, row: f64) -> Result<Bounds> {
+        bounds(row, std::f64::consts::FRAC_PI_2, self.head)
+    }
 }
 
 /// 仕様どおりの楕円断面・目の間隔の初期値（EYE_CENTER_X）で場面を作る。
@@ -707,20 +953,29 @@ pub fn build_scene_with(degrees: f64, head: Head, eye_x: f64) -> Result<Scene> {
         return Err(ModelError::InvalidEyeLayout);
     }
     let theta = rad(degrees);
-    let mut outline = Vec::with_capacity(690);
-    let mut reference = Vec::with_capacity(690);
-    for i in 0..=344 {
+    let morph = ProfileMorph::new(degrees, head);
+    let split = (PROFILE_SPLIT_ROW * 2.0) as usize;
+    let mut outline = Vec::with_capacity(692);
+    let mut reference = Vec::with_capacity(692);
+    // 後ろ側の下部（あごの裏）→ 顎先 → 前面 → 頭頂 → 後ろ側の上部 → うなじ。
+    // 正面の輪郭 reference は θ > 0 と同じ向きに、画面左の下部から回る。
+    for i in split..=344 {
         let y = i as f64 / 2.0;
-        outline.push((bounds(y, theta, head)?.left, y));
+        outline.push(morph.back(y, &PROFILE_JAW)?);
         reference.push((-shape(y, 1.0)?.a, y));
     }
     for i in (0..=344).rev() {
         let y = i as f64 / 2.0;
-        outline.push((bounds(y, theta, head)?.right, y));
+        outline.push(morph.front(y)?);
         reference.push((shape(y, 1.0)?.a, y));
     }
+    for i in 0..=split {
+        let y = i as f64 / 2.0;
+        outline.push(morph.back(y, &PROFILE_BACK)?);
+        reference.push((-shape(y, 1.0)?.a, y));
+    }
     let centerline = (0..=172)
-        .map(|y| bounds(y as f64, theta, head).map(|b| (b.center, y as f64)))
+        .map(|y| morph.center(y as f64))
         .collect::<Result<Vec<_>>>()?;
     let mut eyes = [eye(-1.0, theta, head, eye_x)?, eye(1.0, theta, head, eye_x)?];
     for e in &mut eyes {
@@ -736,7 +991,13 @@ pub fn build_scene_with(degrees: f64, head: Head, eye_x: f64) -> Result<Scene> {
             EyeRole::Far
         };
     }
-    let slice = bounds(EYE_Y, theta, head)?;
+    let level_front = morph.front(EYE_Y)?;
+    let level_back = morph.back(EYE_Y, &PROFILE_BACK)?;
+    let eye_level = if morph.dir > 0.0 {
+        [level_back, level_front]
+    } else {
+        [level_front, level_back]
+    };
     Ok(Scene {
         degrees,
         q,
@@ -748,7 +1009,7 @@ pub fn build_scene_with(degrees: f64, head: Head, eye_x: f64) -> Result<Scene> {
         centerline,
         eyes,
         chin: (60.0 * q * theta.sin(), Y_MAX),
-        eye_level: [(slice.left, EYE_Y), (slice.right, EYE_Y)],
+        eye_level,
         section: cross_section(theta, head)?,
     })
 }
@@ -1066,6 +1327,66 @@ mod tests {
                         assert!(((lo + hi) / 2.0 - e.side * eye_x).abs() < 1e-9);
                     }
                 }
+            }
+        }
+    }
+
+    /// |θ| ≤ 45° の輪郭は断面モデルのままで、線は閉じている。
+    #[test]
+    fn profile_does_not_touch_views_up_to_45() {
+        for q in QS {
+            for head in heads(q) {
+                for deg in [-45.0, -20.0, 0.0, 30.0, 45.0] {
+                    let s = scene(deg, head);
+                    assert_eq!(s.outline.first(), s.outline.last());
+                    for &(x, y) in &s.outline {
+                        let b = bounds(y, rad(deg), head).unwrap();
+                        assert!(
+                            (x - b.left).abs() < TOL || (x - b.right).abs() < TOL,
+                            "q={q} deg={deg} y={y}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// 真横の輪郭は手描きの線に一致する。断面の形によらず同じで、X は q 倍になる。
+    #[test]
+    fn profile_matches_drawing_at_90() {
+        let all = PROFILE_BACK.iter().chain(&PROFILE_FRONT).chain(&PROFILE_JAW);
+        for q in QS {
+            for head in heads(q) {
+                let s = scene(90.0, head);
+                let m = scene(-90.0, head);
+                for (p, n) in s.outline.iter().zip(&m.outline) {
+                    assert!((p.0 + n.0).abs() < TOL && (p.1 - n.1).abs() < TOL);
+                }
+                for r in all.clone() {
+                    let nearest = s
+                        .outline
+                        .iter()
+                        .map(|p| (p.0 - q * r[1]).hypot(p.1 - r[2]))
+                        .fold(f64::INFINITY, f64::min);
+                    assert!(nearest < 1.2 * q.max(1.0), "q={q} point={r:?} off by {nearest}");
+                }
+                let top = s.outline.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+                assert!((top - PROFILE_FRONT[0][2]).abs() < TOL);
+                let (a, b) = (s.outline[0], *s.outline.last().unwrap());
+                assert!((a.0 - b.0).hypot(a.1 - b.1) > 10.0, "首の開口が閉じている");
+                assert!((s.eye_level[0].0 - bounds(EYE_Y, rad(90.0), head).unwrap().left).abs() < 1.0);
+            }
+        }
+    }
+
+    /// 45°〜90° のあいだ、線が飛ばずに動く（隣の角度との差が小さい）。
+    #[test]
+    fn profile_moves_smoothly() {
+        let head = Head::wedge(1.0, WEDGE_PHI_DEFAULT);
+        for deg in 45..90 {
+            let (a, b) = (scene(deg as f64, head), scene(deg as f64 + 1.0, head));
+            for (p, n) in a.outline.iter().zip(&b.outline) {
+                assert!((p.0 - n.0).hypot(p.1 - n.1) < 8.0, "deg={deg}");
             }
         }
     }
